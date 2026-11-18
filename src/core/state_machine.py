@@ -27,31 +27,35 @@ class StateMachine:
 
     @property
     def is_input_locked(self) -> bool:
-        """Indica si la entrada de micrófono está bloqueada (Input Lock en SPEAKING)."""
-        # TODO: Devolver True durante SPEAKING (y/o PROCESSING) para evitar eco acústico.
-        raise NotImplementedError("Pendiente de implementar is_input_locked.")
+        """Indica si la entrada de micrófono está bloqueada (PROCESSING y SPEAKING)."""
+        return self._state in (SystemState.PROCESSING, SystemState.SPEAKING)
+
+    def _transition(self, expected: SystemState, target: SystemState) -> SystemState:
+        if self._state != expected:
+            raise ValueError(
+                f"Transición inválida: no se puede pasar a {target.value} desde {self._state.value} "
+                f"(se esperaba {expected.value})."
+            )
+        self._state = target
+        return self._state
 
     def start_session(self) -> SystemState:
         """Transición IDLE -> LISTENING al iniciar la sesión."""
-        # TODO: Validar y ejecutar transición a LISTENING.
-        raise NotImplementedError("Pendiente de implementar start_session.")
+        return self._transition(SystemState.IDLE, SystemState.LISTENING)
 
     def on_speech_ended(self) -> SystemState:
         """Transición LISTENING -> PROCESSING al detectar fin de voz en el VAD."""
-        # TODO: Validar y ejecutar transición a PROCESSING.
-        raise NotImplementedError("Pendiente de implementar on_speech_ended.")
+        return self._transition(SystemState.LISTENING, SystemState.PROCESSING)
 
     def on_response_ready(self) -> SystemState:
         """Transición PROCESSING -> SPEAKING activando Input Lock."""
-        # TODO: Validar y ejecutar transición a SPEAKING.
-        raise NotImplementedError("Pendiente de implementar on_response_ready.")
+        return self._transition(SystemState.PROCESSING, SystemState.SPEAKING)
 
     def on_playback_finished(self) -> SystemState:
         """Transición SPEAKING -> LISTENING al terminar el audio TTS."""
-        # TODO: Validar y ejecutar transición a LISTENING.
-        raise NotImplementedError("Pendiente de implementar on_playback_finished.")
+        return self._transition(SystemState.SPEAKING, SystemState.LISTENING)
 
     def stop_session(self) -> SystemState:
         """Detiene la sesión volviendo a IDLE."""
-        # TODO: Ejecutar transición segura a IDLE.
-        raise NotImplementedError("Pendiente de implementar stop_session.")
+        self._state = SystemState.IDLE
+        return self._state

@@ -1,0 +1,37 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Caché y compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Variables de entorno y secretos
+.env
+.env.local
+
+# Pesos de modelos locales (mantener estructura del directorio)
+models/*
+!models/.gitkeep
+!models/README.md
+
+# Audio temporal y resultados de evaluación
+*.wav
+*.mp3
+*.ogg
+*.pcm
+tmp/
+logs/
+
+# IDEs y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
 from typing import Any
 
 import gradio as gr
@@ -133,17 +132,29 @@ def _run_pipeline_turn(
         from src.core.orchestrator import CognitiveOrchestrator
 
         if session.vad is None:
-            session.vad = VoiceActivityDetector(level=session.profile.level.value)
+            try:
+                session.vad = VoiceActivityDetector(level=session.profile.level.value)
+            except TypeError:
+                session.vad = VoiceActivityDetector()
         if session.stt is None:
-            session.stt = FasterWhisperSTT(
-                model_size=settings.whisper_model_size,
-                device=settings.whisper_device,
-                compute_type=settings.whisper_compute_type,
-            )
+            try:
+                session.stt = FasterWhisperSTT(
+                    model_size=settings.whisper_model_size,
+                    device=settings.whisper_device,
+                    compute_type=settings.whisper_compute_type,
+                )
+            except TypeError:
+                session.stt = FasterWhisperSTT()
         if session.orchestrator is None:
-            session.orchestrator = CognitiveOrchestrator(settings=settings)
+            try:
+                session.orchestrator = CognitiveOrchestrator(settings=settings)
+            except TypeError:
+                session.orchestrator = CognitiveOrchestrator()
         if session.tts is None:
-            session.tts = PiperTTSEngine(model_path=settings.piper_model_path)
+            try:
+                session.tts = PiperTTSEngine(model_path=settings.piper_model_path)
+            except TypeError:
+                session.tts = PiperTTSEngine()
 
         # 1. VAD + STT
         _ = session.vad.process_chunk(audio_16k)
@@ -152,18 +163,18 @@ def _run_pipeline_turn(
 
         # 2. Orquestador Cognitivo (LLM + Pydantic)
         tutor_resp: TutorResponse = session.orchestrator.process_turn(
-            user_text=user_text,
-            profile=session.profile,
+            user_text,
+            session.profile,
         )
 
         # 3. Síntesis TTS con modulación prosódica
         tts_audio = session.tts.synthesize(
-            text=tutor_resp.oral_response,
-            rate=tutor_resp.prosody_flags.rate,
+            tutor_resp.oral_response,
+            tutor_resp.prosody_flags.rate,
         )
         return tutor_resp, (SAMPLE_RATE, tts_audio)
 
-    except (ImportError, NotImplementedError, AttributeError):
+    except (ImportError, NotImplementedError, AttributeError, TypeError):
         # Respuesta simulada mientras los Bloques 1 y 2 completan sus clases
         duration_sec = round(len(audio_16k) / SAMPLE_RATE, 2)
         simulated = TutorResponse(
@@ -356,9 +367,9 @@ def build_app() -> gr.Blocks:
             with gr.Column(scale=3):
                 gr.Markdown("## Canal Auditivo (Síncrono)")
                 mic_input = gr.Audio(
-                    sources=["microphone"],
+                    sources=["microphone", "upload"],
                     type="numpy",
-                    label="Micrófono (PCM 16 kHz)",
+                    label="Micrófono / Audio de prueba (PCM 16 kHz)",
                     interactive=False,
                 )
                 send_btn = gr.Button("Enviar Turno", variant="primary", interactive=False)

@@ -56,7 +56,7 @@ class ProsodyFlags(BaseModel):
 class TutorResponse(BaseModel):
     """Contrato JSON estricto devuelto por el LLM."""
 
-    transcript: str
-    oral_response: str
-    visual_card: VisualCard
-    prosody_flags: ProsodyFlags
+    transcript: str = ""
+    oral_response: str = Field(..., min_length=1)                           # Obliga que oral response no sea una cadena vacía
+    visual_card: VisualCard = Field(default_factory=VisualCard)             # Genera una VisualCard por defecto
+    prosody_flags: ProsodyFlags = Field(default_factory=ProsodyFlags)       # Genera un ProsodyFlags por defecto

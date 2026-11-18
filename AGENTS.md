@@ -134,7 +134,7 @@ Para evitar la saturación de la memoria de trabajo del alumno durante la conver
 ### Arquitectura de Directorios
 ```text
 yarna/
-├── CONTEXTO_YARNA.md          # Este documento de especificación maestra
+├── AGENTS.md                  # Este documento de especificación maestra y reglas IA
 ├── requirements.txt           # Dependencias del proyecto
 ├── .env.example               # Variables de entorno (API keys / rutas de modelos)
 ├── models/                    # Pesos locales (modelos ONNX de Piper y Whisper)
@@ -168,3 +168,21 @@ Para la memoria y defensa de la asignatura, el sistema se validará en tres dime
 1. **Evaluación Acústica (WER):** Medición de la tasa de error de palabra (*Word Error Rate*) mediante `jiwer` sobre muestras de hablantes no nativos del dataset público **L2-ARCTIC**.
 2. **Perfilado de Rendimiento (RTF y Latencia):** Registro de marcas temporales en cada fase ($T_{\text{VAD}} + T_{\text{STT}} + T_{\text{LLM}} + T_{\text{TTS}}$) verificando el cumplimiento de $p95 < 1.8\text{ s}$.
 3. **Evaluación de Usabilidad (SUS):** Pruebas interactivas con usuarios reales de distintos niveles aplicando el cuestionario estandarizado *System Usability Scale* para medir carga cognitiva y fluidez percibida.
+
+---
+
+## 8. Reglas Operativas para Agentes IA (Coding Guidelines)
+
+Cualquier agente IA que colabore en este repositorio debe respetar obligatoriamente las siguientes invariantes:
+
+1. **Desacoplamiento estricto de las 3 capas:**
+   * `src/ui/` (Capa 1) solo se comunica con `src/core/` (Capa 2) y `src/audio/` (Capa 3) a través de sus interfaces públicas.
+   * `src/audio/` (Capa 3) no debe importar nada de `src/ui/` ni acoplarse a Gradio.
+2. **Inmutabilidad del contrato de datos:**
+   * Respetar los esquemas Pydantic definidos en `src/core/schemas.py` (`SessionProfile`, `TutorResponse`, `VisualCard`, `ProsodyFlags`) y las constantes de `src/config.py` (`SAMPLE_RATE`, `LEVEL_PARAMS`, `Settings`) para no romper el desarrollo en paralelo de las ramas del equipo.
+3. **Prioridad del canal oral (Degradación Elegante):**
+   * En `src/core/orchestrator.py`, un error parcial de parseo o validación en `visual_card` **nunca** debe impedir devolver `oral_response` ni bloquear la síntesis con Piper TTS.
+   * Si el JSON del LLM falla por completo tras un reintento, debe emitirse una respuesta acústica de contingencia válida bajo `TutorResponse`.
+4. **Invariantes acústicas, de latencia y de estados:**
+   * Todo flujo de audio interno opera en PCM mono a `16000 Hz` (`SAMPLE_RATE`) normalizado en `float32` dentro del rango `[-1.0, 1.0]`.
+   * Mantener el objetivo de latencia $p95 < 1.8\text{ s}$ por turno evitando bloqueos síncronos innecesarios y respetando el *Input Lock* de `StateMachine` durante el estado `SPEAKING`.

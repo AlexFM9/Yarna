@@ -3,13 +3,13 @@
 Estructura base del proyecto **YARNA** para la asignatura **Interfaces Inteligentes**.
 
 * **Equipo de Desarrollo:** Alexander Fontán Moreira, Antonio Formoso Rey, Carlota Marra Rodríguez
-* **Especificación Maestra:** [CONTEXTO_YARNA.md](./CONTEXTO_YARNA.md)
+* **Especificación Maestra y Reglas IA:** [AGENTS.md](./AGENTS.md)
 
 ## Estructura del Repositorio
 
 ```text
 yarna/
-├── CONTEXTO_YARNA.md          # Documento de especificación técnica
+├── AGENTS.md                  # Especificación técnica y reglas automáticas para IA
 ├── README.md                  # Guía de inicio y estructura
 ├── requirements.txt           # Dependencias del proyecto
 ├── .env.example               # Plantilla de variables de entorno

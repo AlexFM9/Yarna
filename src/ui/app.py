@@ -28,6 +28,10 @@ from src.core.state_machine import StateMachine, SystemState
 DEFAULT_FOLDERS: list[str] = ["General", "Trabajo y Estudios", "Viajes y Ocio"]
 
 CUSTOM_CSS = """
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
 :root {
     --wa-bg-app: #efeae2;
     --wa-sidebar-bg: #ffffff;
@@ -63,22 +67,41 @@ CUSTOM_CSS = """
 }
 
 .gradio-container {
-    max-width: 1380px !important;
+    max-width: 1400px !important;
+    width: 100% !important;
     margin: 0 auto !important;
+    padding: 12px 16px !important;
+    overflow-x: hidden !important;
     font-family: 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Asegurar que filas y columnas no desborden nunca */
+.gradio-container .gr-row {
+    flex-wrap: wrap !important;
+    gap: 12px !important;
+}
+.gradio-container .gr-column {
+    min-width: 0 !important;
+}
+.gradio-container button {
+    width: 100% !important;
+    max-width: 100% !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
 }
 
 .wa-top-banner {
     background: var(--wa-header-grad);
     color: #ffffff;
-    padding: 16px 24px;
+    padding: 16px 22px;
     border-radius: 14px;
-    margin-bottom: 14px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+    width: 100%;
 }
 .wa-top-banner h1 {
     margin: 0 0 4px 0 !important;
-    font-size: 1.5rem !important;
+    font-size: 1.45rem !important;
     font-weight: 700 !important;
     color: #ffffff !important;
 }
@@ -89,12 +112,13 @@ CUSTOM_CSS = """
 }
 
 .setup-card {
-    max-width: 760px !important;
-    margin: 12px auto !important;
+    max-width: 780px !important;
+    width: 100% !important;
+    margin: 10px auto !important;
     background: var(--wa-panel-bg) !important;
     border: 1px solid var(--wa-border) !important;
     border-radius: 18px !important;
-    padding: 26px 30px !important;
+    padding: 24px 26px !important;
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08) !important;
 }
 
@@ -103,6 +127,8 @@ CUSTOM_CSS = """
     border: 1px solid var(--wa-border) !important;
     border-radius: 14px !important;
     padding: 14px !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
 }
 
 .wa-chat-window {
@@ -111,9 +137,11 @@ CUSTOM_CSS = """
     background-size: 18px 18px;
     border: 1px solid var(--wa-border);
     border-radius: 14px;
-    padding: 16px;
-    height: 410px;
+    padding: 14px;
+    height: 360px;
+    width: 100%;
     overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -131,13 +159,15 @@ CUSTOM_CSS = """
 }
 
 .wa-bubble {
-    max-width: 82%;
+    max-width: 85%;
     padding: 10px 14px;
     border-radius: 12px;
-    font-size: 0.95rem;
+    font-size: 0.94rem;
     line-height: 1.45;
     color: var(--wa-text-main);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 .wa-bubble.user {
     background: var(--wa-bubble-user);
@@ -155,7 +185,7 @@ CUSTOM_CSS = """
     color: var(--wa-text-muted);
     display: flex;
     justify-content: space-between;
-    gap: 12px;
+    gap: 10px;
 }
 
 .wa-underline-grammar {
@@ -194,13 +224,22 @@ CUSTOM_CSS = """
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 14px;
+    padding: 8px 12px;
     border-radius: 10px;
     font-weight: 600;
-    font-size: 0.86rem;
+    font-size: 0.84rem;
     border: 1px solid var(--wa-border);
     background: var(--wa-panel-bg);
     color: var(--wa-text-main);
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.status-pill span {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .status-listening {
     background: #ecfdf5;
@@ -231,19 +270,23 @@ CUSTOM_CSS = """
 }
 
 .error-cards-feed {
-    height: 490px;
+    height: 510px;
+    width: 100%;
     overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding-right: 4px;
+    padding-right: 2px;
 }
 .err-card {
     background: var(--wa-panel-bg);
     border: 1px solid var(--wa-border);
     border-radius: 12px;
-    padding: 14px;
+    padding: 13px;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 .err-card.grammar {
     border-left: 5px solid var(--wa-err-grammar-line);
@@ -255,19 +298,19 @@ CUSTOM_CSS = """
     border-left: 5px solid #10b981;
 }
 .err-card-header {
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.03em;
     margin-bottom: 6px;
 }
 .err-card-quote {
-    font-size: 0.88rem;
+    font-size: 0.86rem;
     color: var(--wa-text-muted);
     margin-bottom: 6px;
 }
 .err-card-fix {
-    font-size: 0.95rem;
+    font-size: 0.92rem;
     font-weight: 700;
     color: var(--wa-text-main);
     background: rgba(16, 185, 129, 0.12);
@@ -276,7 +319,7 @@ CUSTOM_CSS = """
     margin-bottom: 6px;
 }
 .err-card-exp {
-    font-size: 0.88rem;
+    font-size: 0.86rem;
     color: var(--wa-text-main);
     line-height: 1.4;
 }
@@ -386,8 +429,8 @@ class UISessionState:
             err_count = sum(
                 1 for _, _, c in chat.error_cards if c.category != CorrectionCategory.OK
             )
-            badge = f" · {err_count} corr." if err_count > 0 else ""
-            label = f"📁 {chat.folder} | 💬 {chat.title} [{chat.level_label}{badge}]"
+            badge = f" ({err_count} corr.)" if err_count > 0 else ""
+            label = f"📁 {chat.folder} · {chat.title} [{chat.level_label}]{badge}"
             choices.append((label, cid))
         return choices
 
@@ -444,7 +487,7 @@ def _render_chat_window(chat: ChatThread | None) -> str:
     if not chat.messages:
         return (
             "<div class='wa-chat-window'>"
-            "<div style='margin:auto; text-align:center; color:var(--wa-text-muted); max-width:380px;'>"
+            "<div style='margin:auto; text-align:center; color:var(--wa-text-muted); max-width:360px;'>"
             f"<b>📁 {html.escape(chat.folder)} · {html.escape(chat.title)}</b><br/>"
             f"<small>Nivel {html.escape(chat.level_label)} · Registro {html.escape(chat.profile.register_mode.value)}</small><br/><br/>"
             "El micrófono ya está listo. Graba tu primera intervención y pulsa <b>Enviar ➤</b>."
@@ -539,13 +582,14 @@ def _render_status_badge(state: SystemState, detail: str = "") -> str:
     """Genera un indicador HTML estilizado según el estado de la StateMachine."""
     styles = {
         SystemState.IDLE: ("status-pill", "⚪", "PAUSADO"),
-        SystemState.LISTENING: ("status-pill status-listening", "🟢", "EN LÍNEA · ESCUCHANDO"),
+        SystemState.LISTENING: ("status-pill status-listening", "🟢", "EN LÍNEA"),
         SystemState.PROCESSING: ("status-pill status-processing", "🟡", "PROCESANDO..."),
-        SystemState.SPEAKING: ("status-pill status-speaking", "🔵", "TUTOR HABLANDO (MIC BLOQUEADO)"),
+        SystemState.SPEAKING: ("status-pill status-speaking", "🔵", "HABLANDO (BLOQUEADO)"),
     }
     css_class, icon, label = styles.get(state, ("status-pill", "⚪", state.value))
-    extra = f" &nbsp;·&nbsp; <span style='font-weight:400'>{detail}</span>" if detail else ""
-    return f"<div class='{css_class}'>{icon} <span>{label}</span>{extra}</div>"
+    safe_detail = html.escape(detail)
+    extra = f" · <span style='font-weight:400'>{safe_detail}</span>" if safe_detail else ""
+    return f"<div class='{css_class}' title='{safe_detail}'>{icon} <span>{label}{extra}</span></div>"
 
 
 def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.ndarray | None:
@@ -706,7 +750,6 @@ def start_new_chat_from_setup(
     session: UISessionState,
 ):
     """Crea el chat desde la pantalla inicial, oculta la configuración y abre la vista de chat."""
-    # Resolver carpeta (si escribió una nueva carpeta, se añade a la lista)
     folder = new_folder_name.strip() if new_folder_name and new_folder_name.strip() else folder_choice
     if not folder:
         folder = DEFAULT_FOLDERS[0]
@@ -730,12 +773,12 @@ def start_new_chat_from_setup(
 
     return (
         session,
-        gr.update(visible=False),  # Oculta setup_view
-        gr.update(visible=True),   # Muestra chat_view
+        gr.update(visible=False),
+        gr.update(visible=True),
         gr.update(choices=session.folder_filter_choices(), value="Todas"),
         gr.update(choices=session.chat_choices(), value=new_thread.chat_id),
         gr.update(choices=session.folders, value=new_thread.folder),
-        _render_status_badge(state, f"📁 {folder} · {title} (Nivel {level}, timeout {timeout}s)"),
+        _render_status_badge(state, f"{title} · Nivel {level} · {timeout}s"),
         _render_chat_window(new_thread),
         _render_error_cards(new_thread),
         gr.update(value=None, interactive=True),
@@ -748,11 +791,11 @@ def open_setup_for_another_chat(session: UISessionState):
     _safe_fsm_transition(session.fsm, "stop_session")
     return (
         session,
-        gr.update(visible=True),   # Muestra setup_view
-        gr.update(visible=False),  # Oculta chat_view
+        gr.update(visible=True),
+        gr.update(visible=False),
         gr.update(choices=session.folders, value=session.folders[0]),
-        "",  # Limpia caja de nueva carpeta
-        "",  # Limpia caja de tema
+        "",
+        "",
         None,
     )
 
@@ -795,7 +838,7 @@ def switch_chat_handler(selected_chat_id: str, session: UISessionState):
     return (
         session,
         gr.update(choices=session.folders, value=chat.folder),
-        _render_status_badge(state, f"📁 {chat.folder} · {chat.title} ({chat.level_label})"),
+        _render_status_badge(state, f"{chat.title} ({chat.level_label})"),
         _render_chat_window(chat),
         _render_error_cards(chat),
     )
@@ -817,7 +860,7 @@ def resume_session_handler(session: UISessionState):
     chat = session.active_chat
     state = _safe_fsm_transition(session.fsm, "start_session")
     session.last_activity_ts = time.monotonic()
-    detail = f"📁 {chat.folder} · {chat.title}" if chat else ""
+    detail = f"{chat.title}" if chat else ""
     return (
         session,
         _render_status_badge(state, detail),
@@ -942,7 +985,7 @@ def check_silence_timeout(session: UISessionState):
     )
     return (
         session,
-        _render_status_badge(session.fsm.state, f"Reenganche tras {timeout}s de silencio"),
+        _render_status_badge(session.fsm.state, f"Reenganche tras {timeout}s"),
         _render_chat_window(chat),
     )
 
@@ -964,8 +1007,8 @@ def build_app() -> gr.Blocks:
         session_state = gr.State(UISessionState)
 
         # Cabecera global + Selector de Tema
-        with gr.Row(equal_height=True):
-            with gr.Column(scale=5):
+        with gr.Row():
+            with gr.Column(scale=5, min_width=280):
                 gr.HTML(
                     """
                     <div class="wa-top-banner">
@@ -974,7 +1017,7 @@ def build_app() -> gr.Blocks:
                     </div>
                     """
                 )
-            with gr.Column(scale=1, min_width=190):
+            with gr.Column(scale=1, min_width=170):
                 theme_toggle = gr.Radio(
                     choices=["☀️ Claro", "🌙 Oscuro"],
                     value="☀️ Claro",
@@ -1055,14 +1098,14 @@ def build_app() -> gr.Blocks:
         # =====================================================================
         # VISTA 2: ENTORNO DE CHAT ESTILO WHATSAPP (Oculta opciones de setup)
         # =====================================================================
-        with gr.Row(visible=False, equal_height=False) as chat_view:
+        with gr.Row(visible=False) as chat_view:
             # COLUMNA 1: Botón "Otro Chat" + Carpetas + Lista de Chats
-            with gr.Column(scale=3, elem_classes=["wa-column"]):
+            with gr.Column(scale=3, min_width=240, elem_classes=["wa-column"]):
                 another_chat_btn = gr.Button(
                     "➕ Otro Chat",
                     variant="primary",
+                    size="md",
                 )
-                gr.Markdown("---")
                 gr.Markdown("### 📁 Carpetas y Chats")
                 folder_filter_dd = gr.Dropdown(
                     choices=["Todas"] + DEFAULT_FOLDERS,
@@ -1076,7 +1119,6 @@ def build_app() -> gr.Blocks:
                     label="Tus conversaciones",
                     interactive=True,
                 )
-                gr.Markdown("---")
                 move_folder_dd = gr.Dropdown(
                     choices=DEFAULT_FOLDERS,
                     value=DEFAULT_FOLDERS[0],
@@ -1085,30 +1127,28 @@ def build_app() -> gr.Blocks:
                 )
 
             # COLUMNA 2: Ventana de Chat (Burbujas + Micrófono)
-            with gr.Column(scale=5, elem_classes=["wa-column"]):
-                with gr.Row(equal_height=True):
-                    resume_btn = gr.Button("▶ Escuchar", variant="primary", scale=1)
-                    stop_btn = gr.Button("⏹ Pausar", variant="stop", scale=1)
-                    status_banner = gr.HTML(
-                        value=_render_status_badge(SystemState.IDLE),
-                    )
+            with gr.Column(scale=5, min_width=320, elem_classes=["wa-column"]):
+                status_banner = gr.HTML(
+                    value=_render_status_badge(SystemState.IDLE),
+                )
+                with gr.Row():
+                    resume_btn = gr.Button("▶ Escuchar", variant="primary", size="sm", scale=1)
+                    stop_btn = gr.Button("⏹ Pausar", variant="stop", size="sm", scale=1)
 
                 chat_window = gr.HTML(value=_render_chat_window(None))
 
-                with gr.Row(equal_height=True):
-                    mic_input = gr.Audio(
-                        sources=["microphone", "upload"],
-                        type="numpy",
-                        label="🎙️ Mensaje de voz (16 kHz)",
-                        interactive=True,
-                        scale=3,
-                    )
-                    send_btn = gr.Button(
-                        "Enviar ➤",
-                        variant="primary",
-                        interactive=True,
-                        scale=1,
-                    )
+                mic_input = gr.Audio(
+                    sources=["microphone", "upload"],
+                    type="numpy",
+                    label="🎙️ Mensaje de voz (16 kHz)",
+                    interactive=True,
+                )
+                send_btn = gr.Button(
+                    "Enviar ➤",
+                    variant="primary",
+                    size="md",
+                    interactive=True,
+                )
 
                 tts_output = gr.Audio(
                     label="🔊 Nota de voz de YARNA",
@@ -1117,10 +1157,10 @@ def build_app() -> gr.Blocks:
                 )
 
             # COLUMNA 3: Tarjetas de Errores (Canal Visual)
-            with gr.Column(scale=4, elem_classes=["wa-column"]):
+            with gr.Column(scale=4, min_width=280, elem_classes=["wa-column"]):
                 gr.Markdown("### 🃏 Tarjetas de Corrección")
                 gr.Markdown(
-                    "<small>🟠 <b>Subrayado ámbar:</b> Gramática &nbsp;|&nbsp; 🟣 <b>Subrayado violeta:</b> Registro/Pragmática</small>"
+                    "<small>🟠 <b>Ámbar:</b> Gramática &nbsp;|&nbsp; 🟣 <b>Violeta:</b> Registro/Pragmática</small>"
                 )
                 error_cards_panel = gr.HTML(value=_render_error_cards(None))
 

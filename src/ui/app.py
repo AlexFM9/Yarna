@@ -1,8 +1,12 @@
-"""Capa 1: Interfaz web Gradio de doble canal e integración End-to-End."""
+"""Capa 1: Interfaz web Gradio estilo WhatsApp de doble canal e integración End-to-End."""
 
 from __future__ import annotations
 
+import difflib
+import html
 import time
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 import gradio as gr
@@ -21,19 +25,361 @@ from src.core.schemas import (
 from src.core.state_machine import StateMachine, SystemState
 
 
+CUSTOM_CSS = """
+:root {
+    --wa-bg-app: #efeae2;
+    --wa-sidebar-bg: #ffffff;
+    --wa-header-bg: #075e54;
+    --wa-header-grad: linear-gradient(135deg, #075e54 0%, #128c7e 100%);
+    --wa-chat-bg: #efeae2;
+    --wa-bubble-user: #d9fdd3;
+    --wa-bubble-tutor: #ffffff;
+    --wa-text-main: #111b21;
+    --wa-text-muted: #54656f;
+    --wa-border: #d1d7db;
+    --wa-panel-bg: #ffffff;
+    --wa-err-grammar-bg: rgba(245, 158, 11, 0.28);
+    --wa-err-grammar-line: #d97706;
+    --wa-err-prag-bg: rgba(139, 92, 246, 0.25);
+    --wa-err-prag-line: #7c3aed;
+}
+
+.dark {
+    --wa-bg-app: #0b141a;
+    --wa-sidebar-bg: #111b21;
+    --wa-header-bg: #202c33;
+    --wa-header-grad: linear-gradient(135deg, #111b21 0%, #202c33 100%);
+    --wa-chat-bg: #0b141a;
+    --wa-bubble-user: #005c4b;
+    --wa-bubble-tutor: #202c33;
+    --wa-text-main: #e9edef;
+    --wa-text-muted: #8696a0;
+    --wa-border: #2a3942;
+    --wa-panel-bg: #111b21;
+    --wa-err-grammar-bg: rgba(251, 191, 36, 0.25);
+    --wa-err-grammar-line: #fbbf24;
+    --wa-err-prag-bg: rgba(167, 139, 250, 0.25);
+    --wa-err-prag-line: #a78bfa;
+}
+
+.gradio-container {
+    max-width: 1380px !important;
+    margin: 0 auto !important;
+    font-family: 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.wa-top-banner {
+    background: var(--wa-header-grad);
+    color: #ffffff;
+    padding: 16px 24px;
+    border-radius: 14px;
+    margin-bottom: 12px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+}
+.wa-top-banner h1 {
+    margin: 0 0 4px 0 !important;
+    font-size: 1.5rem !important;
+    font-weight: 700 !important;
+    color: #ffffff !important;
+}
+.wa-top-banner p {
+    margin: 0 !important;
+    font-size: 0.9rem !important;
+    color: #d1fae5 !important;
+}
+
+.wa-column {
+    background: var(--wa-panel-bg) !important;
+    border: 1px solid var(--wa-border) !important;
+    border-radius: 14px !important;
+    padding: 14px !important;
+}
+
+.wa-chat-window {
+    background-color: var(--wa-chat-bg);
+    background-image: radial-gradient(var(--wa-border) 0.75px, transparent 0.75px);
+    background-size: 18px 18px;
+    border: 1px solid var(--wa-border);
+    border-radius: 14px;
+    padding: 16px;
+    height: 410px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.wa-msg-row {
+    display: flex;
+    width: 100%;
+}
+.wa-msg-row.user {
+    justify-content: flex-end;
+}
+.wa-msg-row.tutor {
+    justify-content: flex-start;
+}
+
+.wa-bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    color: var(--wa-text-main);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    position: relative;
+}
+.wa-bubble.user {
+    background: var(--wa-bubble-user);
+    border-top-right-radius: 2px;
+}
+.wa-bubble.tutor {
+    background: var(--wa-bubble-tutor);
+    border-top-left-radius: 2px;
+}
+
+.wa-sender {
+    font-size: 0.75rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: var(--wa-text-muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.wa-underline-grammar {
+    background: var(--wa-err-grammar-bg);
+    border-bottom: 2.5px wavy var(--wa-err-grammar-line);
+    padding: 1px 4px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+.wa-underline-pragmatics {
+    background: var(--wa-err-prag-bg);
+    border-bottom: 2.5px wavy var(--wa-err-prag-line);
+    padding: 1px 4px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.wa-card-link {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--wa-border);
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.wa-card-link.grammar {
+    color: var(--wa-err-grammar-line);
+}
+.wa-card-link.pragmatics {
+    color: var(--wa-err-prag-line);
+}
+.wa-card-link.ok {
+    color: #10b981;
+}
+
+.status-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.88rem;
+    border: 1px solid var(--wa-border);
+    background: var(--wa-panel-bg);
+    color: var(--wa-text-main);
+}
+.status-listening {
+    background: #ecfdf5;
+    border-color: #10b981;
+    color: #065f46;
+}
+.dark .status-listening {
+    background: rgba(6, 95, 70, 0.35);
+    color: #a7f3d0;
+}
+.status-processing {
+    background: #fffbeb;
+    border-color: #f59e0b;
+    color: #92400e;
+}
+.dark .status-processing {
+    background: rgba(146, 64, 14, 0.35);
+    color: #fde68a;
+}
+.status-speaking {
+    background: #eff6ff;
+    border-color: #3b82f6;
+    color: #1e40af;
+}
+.dark .status-speaking {
+    background: rgba(30, 64, 175, 0.35);
+    color: #bfdbfe;
+}
+
+.error-cards-feed {
+    height: 490px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-right: 4px;
+}
+.err-card {
+    background: var(--wa-panel-bg);
+    border: 1px solid var(--wa-border);
+    border-radius: 12px;
+    padding: 14px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+.err-card.grammar {
+    border-left: 5px solid var(--wa-err-grammar-line);
+}
+.err-card.pragmatics {
+    border-left: 5px solid var(--wa-err-prag-line);
+}
+.err-card.ok {
+    border-left: 5px solid #10b981;
+}
+.err-card-header {
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 6px;
+}
+.err-card-quote {
+    font-size: 0.88rem;
+    color: var(--wa-text-muted);
+    margin-bottom: 6px;
+}
+.err-card-fix {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--wa-text-main);
+    background: rgba(16, 185, 129, 0.12);
+    padding: 6px 10px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+.err-card-exp {
+    font-size: 0.88rem;
+    color: var(--wa-text-main);
+    line-height: 1.4;
+}
+"""
+
+THEME_TOGGLE_JS = """
+(theme_choice) => {
+    const root = document.documentElement;
+    const body = document.body;
+    const app = document.querySelector('gradio-app');
+    const isDark = theme_choice === '🌙 Oscuro';
+
+    [root, body, app].forEach(el => {
+        if (!el) return;
+        if (isDark) {
+            el.classList.add('dark');
+        } else {
+            el.classList.remove('dark');
+        }
+    });
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('__theme', isDark ? 'dark' : 'light');
+    window.history.replaceState({}, '', url);
+    return theme_choice;
+}
+"""
+
+
+@dataclass
+class ChatMessage:
+    """Representa una burbuja individual dentro de un chat."""
+
+    sender: str  # "user" | "tutor"
+    text: str
+    timestamp: str
+    card: VisualCard | None = None
+    card_index: int | None = None
+
+
+@dataclass
+class ChatThread:
+    """Representa un chat independiente (como una conversación en WhatsApp)."""
+
+    chat_id: str
+    title: str
+    level_label: str
+    profile: SessionProfile
+    messages: list[ChatMessage] = field(default_factory=list)
+    error_cards: list[tuple[int, str, VisualCard]] = field(default_factory=list)
+
+
 class UISessionState:
-    """Estado aislado por usuario en Gradio."""
+    """Estado aislado por usuario con múltiples chats activos."""
 
     def __init__(self) -> None:
         self.fsm: StateMachine = StateMachine()
-        self.profile: SessionProfile = SessionProfile()
-        self.history: list[tuple[str, str]] = []
         self.last_activity_ts: float = time.monotonic()
-        # Instancias lazy de los módulos de Capa 2 y Capa 3 (cuando estén implementados)
         self.orchestrator: Any = None
         self.vad: Any = None
         self.stt: Any = None
         self.tts: Any = None
+
+        # Crear 2 chats iniciales de ejemplo listos para usar
+        c1 = self._create_thread(
+            title=DEFAULT_SCENARIOS[0],
+            level_label="A2",
+            register_mode=SocialRegister.EVERYDAY,
+        )
+        c2 = self._create_thread(
+            title=DEFAULT_SCENARIOS[1],
+            level_label="B2",
+            register_mode=SocialRegister.FORMAL,
+        )
+        self.chats: dict[str, ChatThread] = {c1.chat_id: c1, c2.chat_id: c2}
+        self.active_chat_id: str = c1.chat_id
+
+    @staticmethod
+    def _create_thread(
+        title: str,
+        level_label: str,
+        register_mode: SocialRegister,
+    ) -> ChatThread:
+        cefr_enum = _parse_cefr_level(level_label)
+        return ChatThread(
+            chat_id=str(uuid.uuid4())[:8],
+            title=title,
+            level_label=level_label,
+            profile=SessionProfile(
+                level=cefr_enum,
+                register_mode=register_mode,
+                scenario=title,
+            ),
+        )
+
+    @property
+    def active_chat(self) -> ChatThread:
+        return self.chats[self.active_chat_id]
+
+    def chat_choices(self) -> list[tuple[str, str]]:
+        choices = []
+        for cid, chat in self.chats.items():
+            err_count = sum(
+                1 for _, _, c in chat.error_cards if c.category != CorrectionCategory.OK
+            )
+            badge = f" · {err_count} corr." if err_count > 0 else ""
+            label = f"💬 {chat.title} [{chat.level_label} · {chat.profile.register_mode.value}{badge}]"
+            choices.append((label, cid))
+        return choices
 
 
 def _parse_cefr_level(level_str: str) -> CEFRLevel:
@@ -41,6 +387,153 @@ def _parse_cefr_level(level_str: str) -> CEFRLevel:
     if level_str in ("B2", "C1", CEFRLevel.B2_C1.value):
         return CEFRLevel.B2_C1
     return CEFRLevel.A2
+
+
+def _highlight_user_mistakes(user_text: str, card: VisualCard | None) -> str:
+    """Subraya en color las palabras donde difiere la frase del usuario respecto a la corrección."""
+    safe_text = html.escape(user_text)
+    if card is None or card.category == CorrectionCategory.OK or not card.correction:
+        return safe_text
+
+    css_class = (
+        "wa-underline-grammar"
+        if card.category == CorrectionCategory.GRAMMAR
+        else "wa-underline-pragmatics"
+    )
+
+    user_words = user_text.split()
+    corr_words = card.correction.split()
+    matcher = difflib.SequenceMatcher(
+        None,
+        [w.lower().strip(".,!?") for w in user_words],
+        [w.lower().strip(".,!?") for w in corr_words],
+    )
+
+    highlighted_tokens: list[str] = []
+    has_diff = False
+    for tag, i1, i2, _, _ in matcher.get_opcodes():
+        segment = html.escape(" ".join(user_words[i1:i2]))
+        if not segment:
+            continue
+        if tag == "equal":
+            highlighted_tokens.append(segment)
+        else:
+            has_diff = True
+            highlighted_tokens.append(f"<span class='{css_class}'>{segment}</span>")
+
+    if not has_diff:
+        return f"<span class='{css_class}'>{safe_text}</span>"
+    return " ".join(highlighted_tokens)
+
+
+def _render_chat_window(chat: ChatThread) -> str:
+    """Renderiza las burbujas de conversación estilo WhatsApp con errores subrayados."""
+    if not chat.messages:
+        return (
+            "<div class='wa-chat-window'>"
+            "<div style='margin:auto; text-align:center; color:var(--wa-text-muted); max-width:360px;'>"
+            f"<b>Escenario:</b> {html.escape(chat.title)}<br/>"
+            f"<small>Nivel {html.escape(chat.level_label)} · Registro {html.escape(chat.profile.register_mode.value)}</small><br/><br/>"
+            "Pulsa <b>▶ Iniciar Sesión</b>, graba tu voz y envía tu primer mensaje."
+            "</div></div>"
+        )
+
+    bubbles_html: list[str] = ["<div class='wa-chat-window'>"]
+    for msg in chat.messages:
+        if msg.sender == "user":
+            body_html = _highlight_user_mistakes(msg.text, msg.card)
+            footer_html = ""
+            if msg.card is not None:
+                if msg.card.category == CorrectionCategory.GRAMMAR:
+                    footer_html = (
+                        f"<div class='wa-card-link grammar'>"
+                        f"🟠 Error gramatical subrayado → Ver Tarjeta #{msg.card_index}"
+                        f"</div>"
+                    )
+                elif msg.card.category == CorrectionCategory.PRAGMATICS:
+                    footer_html = (
+                        f"<div class='wa-card-link pragmatics'>"
+                        f"🟣 Matiz de registro subrayado → Ver Tarjeta #{msg.card_index}"
+                        f"</div>"
+                    )
+                else:
+                    footer_html = "<div class='wa-card-link ok'>✅ Expresión natural</div>"
+
+            bubbles_html.append(
+                f"<div class='wa-msg-row user'>"
+                f"<div class='wa-bubble user'>"
+                f"<div class='wa-sender'><span>Tú</span><span>{msg.timestamp}</span></div>"
+                f"<div>{body_html}</div>"
+                f"{footer_html}"
+                f"</div></div>"
+            )
+        else:
+            bubbles_html.append(
+                f"<div class='wa-msg-row tutor'>"
+                f"<div class='wa-bubble tutor'>"
+                f"<div class='wa-sender'><span>🤖 YARNA Tutor</span><span>{msg.timestamp}</span></div>"
+                f"<div>{html.escape(msg.text)}</div>"
+                f"</div></div>"
+            )
+
+    bubbles_html.append("</div>")
+    return "".join(bubbles_html)
+
+
+def _render_error_cards(chat: ChatThread) -> str:
+    """Genera las tarjetas visuales acumuladas a partir de los errores subrayados del chat."""
+    if not chat.error_cards:
+        return (
+            "<div class='error-cards-feed'>"
+            "<div style='color:var(--wa-text-muted); padding:16px; text-align:center;'>"
+            "Las partes subrayadas en tus mensajes generarán aquí sus tarjetas de corrección."
+            "</div></div>"
+        )
+
+    cards_html: list[str] = ["<div class='error-cards-feed'>"]
+    # Mostrar las más recientes arriba
+    for idx, original_text, card in reversed(chat.error_cards):
+        if card.category == CorrectionCategory.GRAMMAR:
+            kind_cls = "grammar"
+            badge = f"🟠 Tarjeta #{idx} · Gramática"
+        elif card.category == CorrectionCategory.PRAGMATICS:
+            kind_cls = "pragmatics"
+            badge = f"🟣 Tarjeta #{idx} · Pragmática / Registro"
+        else:
+            kind_cls = "ok"
+            badge = f"✅ Tarjeta #{idx} · Adecuado"
+
+        fix_html = (
+            f"<div class='err-card-fix'>✨ {html.escape(card.correction)}</div>"
+            if card.correction
+            else ""
+        )
+        exp_text = card.explanation or "Expresión correcta para el contexto."
+
+        cards_html.append(
+            f"<div class='err-card {kind_cls}'>"
+            f"<div class='err-card-header'>{badge}</div>"
+            f"<div class='err-card-quote'>Dijiste: <i>\"{html.escape(original_text)}\"</i></div>"
+            f"{fix_html}"
+            f"<div class='err-card-exp'>{html.escape(exp_text)}</div>"
+            f"</div>"
+        )
+
+    cards_html.append("</div>")
+    return "".join(cards_html)
+
+
+def _render_status_badge(state: SystemState, detail: str = "") -> str:
+    """Genera un indicador HTML estilizado según el estado de la StateMachine."""
+    styles = {
+        SystemState.IDLE: ("status-pill", "⚪", "INACTIVO"),
+        SystemState.LISTENING: ("status-pill status-listening", "🟢", "EN LÍNEA · ESCUCHANDO"),
+        SystemState.PROCESSING: ("status-pill status-processing", "🟡", "ESCRIBIENDO / PROCESANDO..."),
+        SystemState.SPEAKING: ("status-pill status-speaking", "🔵", "ENVIANDO AUDIO (MIC BLOQUEADO)"),
+    }
+    css_class, icon, label = styles.get(state, ("status-pill", "⚪", state.value))
+    extra = f" &nbsp;·&nbsp; <span style='font-weight:400'>{detail}</span>" if detail else ""
+    return f"<div class='{css_class}'>{icon} <span>{label}</span>{extra}</div>"
 
 
 def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.ndarray | None:
@@ -73,30 +566,6 @@ def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.nda
     return np.clip(audio, -1.0, 1.0)
 
 
-def _format_visual_card(card: VisualCard) -> str:
-    """Formatea la tarjeta visual asíncrona para el panel lateral."""
-    badges = {
-        CorrectionCategory.OK: "✅ **¡Buen trabajo! (Adecuado)**",
-        CorrectionCategory.GRAMMAR: "📝 **Sugerencia Gramatical**",
-        CorrectionCategory.PRAGMATICS: "🎭 **Matiz Pragmático / Registro**",
-    }
-    header = badges.get(card.category, "💡 **Feedback**")
-    correction_block = f"> **{card.correction}**\n\n" if card.correction else ""
-    explanation_block = card.explanation or "_Sin observaciones adicionales en este turno._"
-    return f"### {header}\n\n{correction_block}{explanation_block}"
-
-
-def _format_transcript(history: list[tuple[str, str]]) -> str:
-    """Renderiza el historial reciente de la conversación."""
-    if not history:
-        return "_La transcripción aparecerá aquí cuando inicies la conversación._"
-    lines = []
-    for speaker, text in history[-6:]:
-        prefix = "🧑 **Tú:**" if speaker == "user" else "🤖 **YARNA:**"
-        lines.append(f"{prefix} {text}")
-    return "\n\n".join(lines)
-
-
 def _safe_fsm_transition(fsm: StateMachine, action: str) -> SystemState:
     """Ejecuta transiciones de StateMachine tolerando que aún tenga NotImplementedError."""
     try:
@@ -123,11 +592,12 @@ def _is_locked(fsm: StateMachine) -> bool:
 
 def _run_pipeline_turn(
     session: UISessionState,
+    chat: ChatThread,
     audio_16k: np.ndarray,
 ) -> tuple[TutorResponse, tuple[int, np.ndarray] | None]:
-    """Conecta [VAD -> STT -> Orchestrator -> TTS] con fallback si aún no están implementados."""
+    """Conecta [VAD -> STT -> Orchestrator -> TTS] con fallback realista si aún no están fusionados."""
     settings = Settings()
-    level_cfg = LEVEL_PARAMS[session.profile.level.value]
+    level_cfg = LEVEL_PARAMS[chat.profile.level.value]
 
     try:
         from src.audio.stt import FasterWhisperSTT
@@ -137,7 +607,7 @@ def _run_pipeline_turn(
 
         if session.vad is None:
             try:
-                session.vad = VoiceActivityDetector(level=session.profile.level.value)
+                session.vad = VoiceActivityDetector(level=chat.profile.level.value)
             except TypeError:
                 session.vad = VoiceActivityDetector()
         if session.stt is None:
@@ -166,7 +636,7 @@ def _run_pipeline_turn(
 
         tutor_resp: TutorResponse = session.orchestrator.process_turn(
             user_text,
-            session.profile,
+            chat.profile,
         )
 
         tts_audio = session.tts.synthesize(
@@ -176,67 +646,111 @@ def _run_pipeline_turn(
         return tutor_resp, (SAMPLE_RATE, tts_audio)
 
     except (ImportError, NotImplementedError, AttributeError, TypeError):
-        duration_sec = round(len(audio_16k) / SAMPLE_RATE, 2)
-        simulated = TutorResponse(
-            transcript=f"[Audio capturado: {duration_sec}s a 16 kHz]",
-            oral_response=(
-                f"Great! We are practicing '{session.profile.scenario}' "
-                f"at level {session.profile.level.value}."
-            ),
-            visual_card=VisualCard(
-                correction="Everything sounds clear so far!",
-                category=CorrectionCategory.OK,
-                explanation=(
-                    "Modo de integración UI activo. En cuanto los módulos de audio "
-                    "y el orquestador estén fusionados, aquí verás tus correcciones reales."
+        # Simulación demostrativa de subrayado de error + tarjeta visual
+        turn_num = len(chat.messages) // 2 + 1
+        if turn_num % 2 == 1:
+            simulated = TutorResponse(
+                transcript="Hello, I want a coffee and I go to work yesterday.",
+                oral_response=(
+                    f"Sure! Let's continue our '{chat.title}' roleplay. "
+                    "What else do you need today?"
                 ),
-            ),
-            prosody_flags=ProsodyFlags(rate=level_cfg["speech_rate"], pitch=0.0),
-        )
+                visual_card=VisualCard(
+                    correction="Hello, I would like a coffee and I went to work yesterday.",
+                    category=CorrectionCategory.GRAMMAR,
+                    explanation=(
+                        "Para acciones pasadas ('yesterday') usamos el pasado simple 'went' "
+                        "en lugar de 'go', y 'I would like' suena más natural al pedir."
+                    ),
+                ),
+                prosody_flags=ProsodyFlags(rate=level_cfg["speech_rate"], pitch=0.0),
+            )
+        else:
+            simulated = TutorResponse(
+                transcript="Give me the menu right now.",
+                oral_response="Of course, here is the menu. Take your time to look through it.",
+                visual_card=VisualCard(
+                    correction="Could you please bring me the menu?",
+                    category=CorrectionCategory.PRAGMATICS,
+                    explanation=(
+                        "En este registro social, 'Give me... right now' suena demasiado brusco. "
+                        "Usa 'Could you please...' para sonar cortés."
+                    ),
+                ),
+                prosody_flags=ProsodyFlags(rate=level_cfg["speech_rate"], pitch=0.0),
+            )
         return simulated, None
 
 
 def _apply_scenario_suggestion(suggestion: str | None) -> str:
-    """Rellena la caja de texto cuando el usuario elige una sugerencia del desplegable."""
     return suggestion or ""
 
 
-def start_session_handler(
+def create_new_chat_handler(
     level: str,
     register_mode: str,
     scenario: str,
     session: UISessionState,
 ):
-    """Inicia la sesión de práctica oral y configura el perfil."""
-    cefr_enum = _parse_cefr_level(level)
-    chosen_scenario = scenario.strip() if scenario and scenario.strip() else DEFAULT_SCENARIOS[0]
-    session.profile = SessionProfile(
-        level=cefr_enum,
+    """Crea un nuevo hilo de chat independiente (como un nuevo chat en WhatsApp)."""
+    title = scenario.strip() if scenario and scenario.strip() else DEFAULT_SCENARIOS[0]
+    new_thread = session._create_thread(
+        title=title,
+        level_label=level,
         register_mode=SocialRegister(register_mode),
-        scenario=chosen_scenario,
     )
-    session.history.clear()
-    session.last_activity_ts = time.monotonic()
+    session.chats[new_thread.chat_id] = new_thread
+    session.active_chat_id = new_thread.chat_id
     state = _safe_fsm_transition(session.fsm, "start_session")
-    timeout = LEVEL_PARAMS[cefr_enum.value]["silence_timeout_sec"]
+    session.last_activity_ts = time.monotonic()
 
     return (
         session,
-        chosen_scenario,
-        f"**Estado:** `{state.value}` | **Nivel:** `{level}` | **Timeout silencio:** `{timeout}s`",
+        gr.update(choices=session.chat_choices(), value=new_thread.chat_id),
+        "",
+        _render_status_badge(state, f"Chat activo: {new_thread.title}"),
+        _render_chat_window(new_thread),
+        _render_error_cards(new_thread),
         gr.update(interactive=True),
         gr.update(interactive=True),
-        _format_transcript(session.history),
-        "_Escuchando... Graba tu turno y pulsa **Enviar Turno**._",
+    )
+
+
+def switch_chat_handler(selected_chat_id: str, session: UISessionState):
+    """Cambia entre los chats existentes manteniendo el historial y tarjetas de cada uno."""
+    if selected_chat_id and selected_chat_id in session.chats:
+        session.active_chat_id = selected_chat_id
+    chat = session.active_chat
+    return (
+        session,
+        chat.level_label,
+        chat.profile.register_mode.value,
+        _render_status_badge(session.fsm.state, f"Chat: {chat.title}"),
+        _render_chat_window(chat),
+        _render_error_cards(chat),
+    )
+
+
+def start_session_handler(session: UISessionState):
+    """Activa el micrófono en el chat actual."""
+    chat = session.active_chat
+    state = _safe_fsm_transition(session.fsm, "start_session")
+    session.last_activity_ts = time.monotonic()
+    timeout = LEVEL_PARAMS[chat.profile.level.value]["silence_timeout_sec"]
+    return (
+        session,
+        _render_status_badge(state, f"{chat.title} · Timeout {timeout}s"),
+        gr.update(interactive=True),
+        gr.update(interactive=True),
     )
 
 
 def stop_session_handler(session: UISessionState):
-    """Detiene la sesión y vuelve a IDLE."""
+    """Detiene la escucha activa."""
     state = _safe_fsm_transition(session.fsm, "stop_session")
     return (
         session,
-        f"**Estado:** `{state.value}`",
+        _render_status_badge(state, "Sesión pausada"),
         gr.update(interactive=False),
         gr.update(interactive=False),
     )
@@ -244,54 +758,68 @@ def stop_session_handler(session: UISessionState):
 
 def process_turn_handler(
     audio_input: tuple[int, np.ndarray] | None,
-    level: str,
-    register_mode: str,
-    scenario: str,
     session: UISessionState,
 ):
-    """Ejecuta un turno completo respetando Input Lock y actualización de doble canal."""
+    """Procesa el turno de voz, subraya errores en la burbuja y genera la tarjeta visual."""
+    chat = session.active_chat
     if _is_locked(session.fsm):
         return (
             session,
-            f"**Estado:** `{session.fsm.state.value}` (Micrófono bloqueado por Input Lock)",
+            _render_status_badge(session.fsm.state, "Input Lock activo"),
             None,
-            _format_transcript(session.history),
+            _render_chat_window(chat),
+            _render_error_cards(chat),
             gr.update(),
             gr.update(interactive=False),
         )
-
-    chosen_scenario = scenario.strip() if scenario and scenario.strip() else DEFAULT_SCENARIOS[0]
-    session.profile = SessionProfile(
-        level=_parse_cefr_level(level),
-        register_mode=SocialRegister(register_mode),
-        scenario=chosen_scenario,
-    )
 
     audio_16k = _ensure_audio_16k_mono(audio_input)
     if audio_16k is None:
         return (
             session,
-            f"**Estado:** `{session.fsm.state.value}` — No se detectó audio en el micrófono.",
+            _render_status_badge(session.fsm.state, "No se detectó audio"),
             None,
-            _format_transcript(session.history),
+            _render_chat_window(chat),
+            _render_error_cards(chat),
             gr.update(),
             gr.update(interactive=True),
         )
 
     _safe_fsm_transition(session.fsm, "on_speech_ended")
-    tutor_response, tts_audio = _run_pipeline_turn(session, audio_16k)
+    tutor_response, tts_audio = _run_pipeline_turn(session, chat, audio_16k)
 
     speaking_state = _safe_fsm_transition(session.fsm, "on_response_ready")
-    session.history.append(("user", tutor_response.transcript))
-    session.history.append(("tutor", tutor_response.oral_response))
+    now_str = time.strftime("%H:%M")
+
+    # Registrar tarjeta vinculada al mensaje del usuario
+    card_idx = len(chat.error_cards) + 1
+    chat.error_cards.append((card_idx, tutor_response.transcript, tutor_response.visual_card))
+
+    chat.messages.append(
+        ChatMessage(
+            sender="user",
+            text=tutor_response.transcript,
+            timestamp=now_str,
+            card=tutor_response.visual_card,
+            card_index=card_idx,
+        )
+    )
+    chat.messages.append(
+        ChatMessage(
+            sender="tutor",
+            text=tutor_response.oral_response,
+            timestamp=now_str,
+        )
+    )
     session.last_activity_ts = time.monotonic()
 
     return (
         session,
-        f"**Estado:** `{speaking_state.value}` (Reproduciendo respuesta...)",
+        _render_status_badge(speaking_state, "Reproduciendo respuesta"),
         tts_audio,
-        _format_transcript(session.history),
-        _format_visual_card(tutor_response.visual_card),
+        _render_chat_window(chat),
+        _render_error_cards(chat),
+        gr.update(choices=session.chat_choices(), value=chat.chat_id),
         gr.update(interactive=False),
     )
 
@@ -302,17 +830,18 @@ def on_audio_playback_end(session: UISessionState):
     session.last_activity_ts = time.monotonic()
     return (
         session,
-        f"**Estado:** `{state.value}` (Tu turno)",
+        _render_status_badge(state, "Tu turno para hablar"),
         gr.update(value=None, interactive=True),
     )
 
 
 def check_silence_timeout(session: UISessionState):
-    """Comprueba el timeout de silencio en LISTENING y lanza mensaje de reenganche."""
+    """Comprueba el timeout de silencio en LISTENING y envía mensaje de reenganche al chat."""
     if session.fsm.state != SystemState.LISTENING:
         return session, gr.update(), gr.update()
 
-    timeout = LEVEL_PARAMS[session.profile.level.value]["silence_timeout_sec"]
+    chat = session.active_chat
+    timeout = LEVEL_PARAMS[chat.profile.level.value]["silence_timeout_sec"]
     if time.monotonic() - session.last_activity_ts < timeout:
         return session, gr.update(), gr.update()
 
@@ -320,114 +849,191 @@ def check_silence_timeout(session: UISessionState):
     try:
         from src.core.prompts import get_reengagement_prompt
 
-        prompt_text = get_reengagement_prompt(session.profile)
+        prompt_text = get_reengagement_prompt(chat.profile)
     except (ImportError, NotImplementedError):
         prompt_text = "Are you still there? Take your time and tell me what you think."
 
-    session.history.append(("tutor", prompt_text))
+    chat.messages.append(
+        ChatMessage(
+            sender="tutor",
+            text=prompt_text,
+            timestamp=time.strftime("%H:%M"),
+        )
+    )
     return (
         session,
-        f"**Estado:** `{session.fsm.state.value}` (Reenganche por silencio > {timeout}s)",
-        _format_transcript(session.history),
+        _render_status_badge(session.fsm.state, f"Reenganche tras {timeout}s de silencio"),
+        _render_chat_window(chat),
     )
 
 
 def build_app() -> gr.Blocks:
-    """Construye la interfaz web Gradio de doble canal de YARNA."""
-    with gr.Blocks(title="YARNA — Tutor Conversacional Adaptativo") as demo:
-        session_state = gr.State(UISessionState)
+    """Construye la interfaz estilo WhatsApp de doble canal de YARNA."""
+    theme = gr.themes.Soft(
+        primary_hue="emerald",
+        secondary_hue="slate",
+        neutral_hue="slate",
+        radius_size="lg",
+    )
 
-        gr.Markdown(
-            "# YARNA — Tutor Conversacional de Doble Canal\n"
-            "Práctica oral adaptativa en inglés con feedback en doble canal."
+    with gr.Blocks(
+        title="YARNA — Tutor Conversacional estilo Chat",
+        theme=theme,
+        css=CUSTOM_CSS,
+    ) as demo:
+        session_state = gr.State(UISessionState)
+        initial_state = UISessionState()
+        first_chat = initial_state.active_chat
+
+        # Cabecera + Modo Claro/Oscuro
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=5):
+                gr.HTML(
+                    """
+                    <div class="wa-top-banner">
+                        <h1>💬 YARNA — Tutor Conversacional por Chats</h1>
+                        <p>Cada escenario es un chat independiente. Tus errores se subrayan en color y generan tarjetas de mejora al instante.</p>
+                    </div>
+                    """
+                )
+            with gr.Column(scale=1, min_width=190):
+                theme_toggle = gr.Radio(
+                    choices=["☀️ Claro", "🌙 Oscuro"],
+                    value="☀️ Claro",
+                    label="Apariencia",
+                    interactive=True,
+                )
+
+        theme_toggle.change(
+            fn=None,
+            inputs=[theme_toggle],
+            outputs=[theme_toggle],
+            js=THEME_TOGGLE_JS,
         )
 
-        # Fila 1: Nivel y Registro
-        with gr.Row():
-            level_selector = gr.Dropdown(
-                choices=["A2", "B2", "C1"],
-                value="A2",
-                label="Nivel MCER",
-                info="Selecciona tu nivel objetivo.",
-            )
-            register_selector = gr.Dropdown(
-                choices=[
-                    SocialRegister.FORMAL.value,
-                    SocialRegister.INFORMAL.value,
-                    SocialRegister.EVERYDAY.value,
-                ],
-                value=SocialRegister.EVERYDAY.value,
-                label="Registro Pragmático",
-                info="Tono social de la conversación.",
-            )
+        # Layout de 3 columnas estilo WhatsApp Web:
+        # [1. Lista de Chats + Nuevo Chat] | [2. Conversación + Audio] | [3. Tarjetas de Errores]
+        with gr.Row(equal_height=False):
+            # COLUMNA 1: Mis Chats + Crear Nuevo Chat
+            with gr.Column(scale=3, elem_classes=["wa-column"]):
+                gr.Markdown("### 🗂️ Mis Chats")
+                chat_list = gr.Radio(
+                    choices=initial_state.chat_choices(),
+                    value=first_chat.chat_id,
+                    label="Conversaciones activas",
+                    interactive=True,
+                )
 
-        # Fila 2: Caja libre para escenario + desplegable de sugerencias al lado
-        with gr.Row():
-            scenario_input = gr.Textbox(
-                value="",
-                label="¿Qué quieres practicar hoy? (Escenario)",
-                placeholder="Escribe aquí la situación (ej. Negociar un alquiler, entrevista médica...)",
-                info="Describe libremente el contexto del diálogo.",
-                scale=3,
-            )
-            scenario_suggestions = gr.Dropdown(
-                choices=DEFAULT_SCENARIOS,
-                value=None,
-                label="¿No tienes ideas? Elige una sugerencia",
-                info="Al seleccionarla se rellenará automáticamente a la izquierda.",
-                scale=2,
-            )
+                gr.Markdown("---")
+                gr.Markdown("#### ➕ Nuevo Chat de Práctica")
+                level_selector = gr.Dropdown(
+                    choices=["A2", "B2", "C1"],
+                    value="A2",
+                    label="Nivel MCER",
+                )
+                register_selector = gr.Dropdown(
+                    choices=[
+                        SocialRegister.FORMAL.value,
+                        SocialRegister.INFORMAL.value,
+                        SocialRegister.EVERYDAY.value,
+                    ],
+                    value=SocialRegister.EVERYDAY.value,
+                    label="Registro Pragmático",
+                )
+                scenario_input = gr.Textbox(
+                    value="",
+                    label="✍️ Escribe el tema del chat",
+                    placeholder="Ej. Negociar un alquiler, pedir en un restaurante...",
+                )
+                scenario_suggestions = gr.Dropdown(
+                    choices=DEFAULT_SCENARIOS,
+                    value=None,
+                    label="💡 ¿No tienes ideas? Elige una",
+                )
+                new_chat_btn = gr.Button("➕ Crear y Abrir Chat", variant="primary")
 
-        # Conectar desplegable de sugerencias -> caja de texto libre
+            # COLUMNA 2: Ventana de Chat (Canal Auditivo + Burbujas)
+            with gr.Column(scale=5, elem_classes=["wa-column"]):
+                with gr.Row(equal_height=True):
+                    start_btn = gr.Button("▶ Iniciar", variant="primary", scale=1)
+                    stop_btn = gr.Button("⏹ Pausar", variant="stop", scale=1)
+                    status_banner = gr.HTML(
+                        value=_render_status_badge(
+                            SystemState.IDLE, f"Chat: {first_chat.title}"
+                        ),
+                    )
+
+                chat_window = gr.HTML(value=_render_chat_window(first_chat))
+
+                with gr.Row(equal_height=True):
+                    mic_input = gr.Audio(
+                        sources=["microphone", "upload"],
+                        type="numpy",
+                        label="🎙️ Mensaje de voz (16 kHz)",
+                        interactive=False,
+                        scale=3,
+                    )
+                    send_btn = gr.Button(
+                        "Enviar ➤",
+                        variant="primary",
+                        interactive=False,
+                        scale=1,
+                    )
+
+                tts_output = gr.Audio(
+                    label="🔊 Nota de voz de YARNA",
+                    autoplay=True,
+                    interactive=False,
+                )
+
+            # COLUMNA 3: Tarjetas de Errores (Canal Visual)
+            with gr.Column(scale=4, elem_classes=["wa-column"]):
+                gr.Markdown("### 🃏 Tarjetas de Corrección")
+                gr.Markdown(
+                    "<small>🟠 <b>Subrayado ámbar:</b> Gramática &nbsp;|&nbsp; 🟣 <b>Subrayado violeta:</b> Registro/Pragmática</small>"
+                )
+                error_cards_panel = gr.HTML(value=_render_error_cards(first_chat))
+
+        # Eventos de gestión de chats
         scenario_suggestions.change(
             fn=_apply_scenario_suggestion,
             inputs=[scenario_suggestions],
             outputs=[scenario_input],
         )
 
-        with gr.Row():
-            start_btn = gr.Button("Iniciar Sesión", variant="primary")
-            stop_btn = gr.Button("Detener Sesión", variant="stop")
-            status_banner = gr.Markdown("**Estado:** `IDLE`")
-
-        with gr.Row():
-            with gr.Column(scale=3):
-                gr.Markdown("## Canal Auditivo (Síncrono)")
-                mic_input = gr.Audio(
-                    sources=["microphone", "upload"],
-                    type="numpy",
-                    label="Micrófono / Audio de prueba (PCM 16 kHz)",
-                    interactive=False,
-                )
-                send_btn = gr.Button("Enviar Turno", variant="primary", interactive=False)
-                tts_output = gr.Audio(
-                    label="Respuesta Oral (Piper TTS)",
-                    autoplay=True,
-                    interactive=False,
-                )
-                transcript_box = gr.Markdown(
-                    "_Pulsa **Iniciar Sesión** para comenzar el diálogo._"
-                )
-
-            with gr.Column(scale=2):
-                gr.Markdown("## Canal Visual (Asíncrono / Persistente)")
-                visual_card_box = gr.Markdown(
-                    "_La tarjeta `visual_card` (gramática / pragmática) aparecerá aquí._"
-                )
-
-        # Eventos de control de sesión
-        start_btn.click(
-            fn=start_session_handler,
+        new_chat_btn.click(
+            fn=create_new_chat_handler,
             inputs=[level_selector, register_selector, scenario_input, session_state],
             outputs=[
                 session_state,
+                chat_list,
                 scenario_input,
                 status_banner,
+                chat_window,
+                error_cards_panel,
                 mic_input,
                 send_btn,
-                transcript_box,
-                visual_card_box,
             ],
+        )
+
+        chat_list.change(
+            fn=switch_chat_handler,
+            inputs=[chat_list, session_state],
+            outputs=[
+                session_state,
+                level_selector,
+                register_selector,
+                status_banner,
+                chat_window,
+                error_cards_panel,
+            ],
+        )
+
+        # Eventos de sesión y voz
+        start_btn.click(
+            fn=start_session_handler,
+            inputs=[session_state],
+            outputs=[session_state, status_banner, mic_input, send_btn],
         )
 
         stop_btn.click(
@@ -436,39 +1042,31 @@ def build_app() -> gr.Blocks:
             outputs=[session_state, status_banner, mic_input, send_btn],
         )
 
-        # Procesamiento de turno por voz
         send_btn.click(
             fn=process_turn_handler,
-            inputs=[
-                mic_input,
-                level_selector,
-                register_selector,
-                scenario_input,
-                session_state,
-            ],
+            inputs=[mic_input, session_state],
             outputs=[
                 session_state,
                 status_banner,
                 tts_output,
-                transcript_box,
-                visual_card_box,
+                chat_window,
+                error_cards_panel,
+                chat_list,
                 mic_input,
             ],
         )
 
-        # Liberación de Input Lock al terminar la reproducción del tutor
         tts_output.stop(
             fn=on_audio_playback_end,
             inputs=[session_state],
             outputs=[session_state, status_banner, mic_input],
         )
 
-        # Temporizador periódico para detectar silencio prolongado en LISTENING
         silence_timer = gr.Timer(value=1.0)
         silence_timer.tick(
             fn=check_silence_timeout,
             inputs=[session_state],
-            outputs=[session_state, status_banner, transcript_box],
+            outputs=[session_state, status_banner, chat_window],
         )
 
     return demo

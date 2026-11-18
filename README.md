@@ -50,9 +50,40 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## Próximos Pasos de Desarrollo
+## Reparto de Tareas y Trabajo en Paralelo (3 Bloques Desacoplados)
 
-1. **Capa 3 (`src/audio/`):** Implementar normalización PCM, Silero VAD adaptativo, `faster-whisper` y síntesis `Piper TTS` con `length_scale`.
-2. **Capa 2 (`src/core/`):** Implementar máquina de estados, prompts parametrizados y orquestador con buffer deslizante y degradación elegante.
-3. **Capa 1 (`src/ui/app.py`):** Conectar los componentes Gradio con el backend y ejecutar `python -m src.ui.app`.
-4. **Validación (`tests/`):** Completar `tests/eval_wer.py` (L2-ARCTIC) y `tests/eval_latency.py` (objetivo $p95 < 1.8\text{ s}$).
+La arquitectura en 3 capas permite dividir el desarrollo en paralelo entre los 3 integrantes del equipo trabajando sobre ramas independientes:
+
+### Bloque 1 — Pipeline Acústico Local: Capa 3 (`feat/audio-pipeline`)
+* **Archivos asignados:** [`src/audio/vad.py`](src/audio/vad.py), [`src/audio/stt.py`](src/audio/stt.py), [`src/audio/tts.py`](src/audio/tts.py), [`tests/eval_wer.py`](tests/eval_wer.py)
+* **Tareas:**
+  * Implementar `normalize_pcm` (entrada PCM 16 kHz escalada a `float32` en `[-1.0, 1.0]`) y `CircularPCMBuffer` para evitar recorte en los primeros fonemas.
+  * Implementar `VoiceActivityDetector` con Silero VAD, umbral adaptativo ($E_{\text{base}} + \alpha \cdot \sigma$) y ventana de silencio parametrizada según nivel (`A2` / `B2/C1`).
+  * Implementar `FasterWhisperSTT` cuantizado (`INT8` en CPU / `FP16` en GPU) devolviendo texto puntuado, marcas temporales (`inicio_ms`, `fin_ms`) y confianza.
+  * Implementar `PiperTTSEngine` con cálculo de `length_scale` (inverso de `prosody_flags.rate`) y síntesis ONNX local.
+  * Completar el benchmark offline de WER sobre el subconjunto L2-ARCTIC en `tests/eval_wer.py` usando `jiwer`.
+
+### Bloque 2 — Orquestador Cognitivo, Prompts y FSM: Capa 2 (`feat/core-orchestrator`)
+* **Archivos asignados:** [`src/core/schemas.py`](src/core/schemas.py), [`src/core/prompts.py`](src/core/prompts.py), [`src/core/orchestrator.py`](src/core/orchestrator.py), [`src/core/state_machine.py`](src/core/state_machine.py)
+* **Tareas:**
+  * Implementar las transiciones de `StateMachine` (`IDLE -> LISTENING -> PROCESSING -> SPEAKING -> LISTENING`) y el bloqueo `is_input_locked` (*Input Lock*) durante `SPEAKING`.
+  * Implementar `build_system_prompt` parametrizado por `[Nivel MCER, Registro Social, Escenario]` (exigiendo *recast* implícito y contrato JSON `TutorResponse`) y `get_reengagement_prompt` para `silencio_timeout`.
+  * Implementar `CognitiveOrchestrator` con buffer deslizante de los últimos $N$ turnos (`MAX_HISTORY_TURNS`), cliente LLM configurable (`ollama` / `openai` / `gemini` con *Structured Outputs*) y validación Pydantic.
+  * Implementar degradación elegante: priorizar siempre `oral_response` si falla `visual_card` y devolver respuesta acústica de contingencia tras reintento fallido.
+
+### Bloque 3 — Interfaz Web de Doble Canal e Integración End-to-End: Capa 1 (`feat/ui-gradio`)
+* **Archivos asignados:** [`src/ui/app.py`](src/ui/app.py), [`src/config.py`](src/config.py), [`tests/eval_latency.py`](tests/eval_latency.py)
+* **Tareas:**
+  * Conectar la UI en Gradio (`python -m src.ui.app`): captura de micrófono web (PCM 16 kHz), selectores de `[Nivel MCER, Registro, Escenario]`, canal auditivo síncrono con `autoplay` e *Input Lock* y panel lateral persistente para `visual_card`.
+  * Integrar de extremo a extremo el ciclo `[VAD -> STT -> Orchestrator/LLM -> TTS]` gestionado por `StateMachine`.
+  * Completar el perfilado de latencia por etapa ($T_{\text{VAD}} + T_{\text{STT}} + T_{\text{LLM}} + T_{\text{TTS}}$) y RTF en `tests/eval_latency.py` verificando el objetivo $p95 < 1.8\text{ s}$.
+  * Coordinar las pruebas de usabilidad con cuestionario SUS (*System Usability Scale*).
+
+### Contratos Comunes y Flujo de Trabajo en Git
+* **Puntos de sincronización:** Respetar los modelos Pydantic de [`src/core/schemas.py`](src/core/schemas.py) (`SessionProfile`, `TutorResponse`, `VisualCard`, `ProsodyFlags`) y las constantes e hiperparámetros de [`src/config.py`](src/config.py) (`SAMPLE_RATE`, `LEVEL_PARAMS`, `Settings`) para desarrollar cada capa de forma independiente sin bloqueos.
+* **Flujo de ramas:**
+  ```bash
+  git checkout -b feat/audio-pipeline     # Bloque 1 (Capa 3)
+  git checkout -b feat/core-orchestrator  # Bloque 2 (Capa 2)
+  git checkout -b feat/ui-gradio          # Bloque 3 (Capa 1 + Integración)
+  ```

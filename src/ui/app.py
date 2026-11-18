@@ -52,11 +52,9 @@ def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.nda
         return None
 
     audio = np.asarray(data)
-    # Convertir a mono si es estéreo
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
 
-    # Normalizar enteros PCM (int16/int32) a float32 [-1.0, 1.0]
     if np.issubdtype(audio.dtype, np.integer):
         max_val = float(np.iinfo(audio.dtype).max)
         audio = audio.astype(np.float32) / max_val
@@ -66,7 +64,6 @@ def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.nda
         if peak > 1.0:
             audio = audio / peak
 
-    # Remuestreo simple si el navegador envía 44.1kHz o 48kHz en lugar de 16kHz
     if sr != SAMPLE_RATE and len(audio) > 0:
         target_len = int(round(len(audio) * SAMPLE_RATE / sr))
         old_idx = np.linspace(0, len(audio) - 1, num=len(audio))
@@ -163,18 +160,15 @@ def _run_pipeline_turn(
             except TypeError:
                 session.tts = PiperTTSEngine()
 
-        # 1. VAD + STT
         _ = session.vad.process_chunk(audio_16k)
         stt_result = session.stt.transcribe(audio_16k)
         user_text = stt_result["text"] if isinstance(stt_result, dict) else str(stt_result)
 
-        # 2. Orquestador Cognitivo (LLM + Pydantic)
         tutor_resp: TutorResponse = session.orchestrator.process_turn(
             user_text,
             session.profile,
         )
 
-        # 3. Síntesis TTS con modulación prosódica
         tts_audio = session.tts.synthesize(
             tutor_resp.oral_response,
             tutor_resp.prosody_flags.rate,
@@ -182,7 +176,6 @@ def _run_pipeline_turn(
         return tutor_resp, (SAMPLE_RATE, tts_audio)
 
     except (ImportError, NotImplementedError, AttributeError, TypeError):
-        # Respuesta simulada mientras los Bloques 1 y 2 completan sus clases
         duration_sec = round(len(audio_16k) / SAMPLE_RATE, 2)
         simulated = TutorResponse(
             transcript=f"[Audio capturado: {duration_sec}s a 16 kHz]",
@@ -203,6 +196,11 @@ def _run_pipeline_turn(
         return simulated, None
 
 
+def _apply_scenario_suggestion(suggestion: str | None) -> str:
+    """Rellena la caja de texto cuando el usuario elige una sugerencia del desplegable."""
+    return suggestion or ""
+
+
 def start_session_handler(
     level: str,
     register_mode: str,
@@ -211,10 +209,11 @@ def start_session_handler(
 ):
     """Inicia la sesión de práctica oral y configura el perfil."""
     cefr_enum = _parse_cefr_level(level)
+    chosen_scenario = scenario.strip() if scenario and scenario.strip() else DEFAULT_SCENARIOS[0]
     session.profile = SessionProfile(
         level=cefr_enum,
         register_mode=SocialRegister(register_mode),
-        scenario=scenario or DEFAULT_SCENARIOS[0],
+        scenario=chosen_scenario,
     )
     session.history.clear()
     session.last_activity_ts = time.monotonic()
@@ -223,6 +222,7 @@ def start_session_handler(
 
     return (
         session,
+        chosen_scenario,
         f"**Estado:** `{state.value}` | **Nivel:** `{level}` | **Timeout silencio:** `{timeout}s`",
         gr.update(interactive=True),
         gr.update(interactive=True),
@@ -260,10 +260,11 @@ def process_turn_handler(
             gr.update(interactive=False),
         )
 
+    chosen_scenario = scenario.strip() if scenario and scenario.strip() else DEFAULT_SCENARIOS[0]
     session.profile = SessionProfile(
         level=_parse_cefr_level(level),
         register_mode=SocialRegister(register_mode),
-        scenario=scenario or DEFAULT_SCENARIOS[0],
+        scenario=chosen_scenario,
     )
 
     audio_16k = _ensure_audio_16k_mono(audio_input)
@@ -277,11 +278,9 @@ def process_turn_handler(
             gr.update(interactive=True),
         )
 
-    # LISTENING -> PROCESSING
     _safe_fsm_transition(session.fsm, "on_speech_ended")
     tutor_response, tts_audio = _run_pipeline_turn(session, audio_16k)
 
-    # PROCESSING -> SPEAKING (Input Lock activo)
     speaking_state = _safe_fsm_transition(session.fsm, "on_response_ready")
     session.history.append(("user", tutor_response.transcript))
     session.history.append(("tutor", tutor_response.oral_response))
@@ -343,12 +342,13 @@ def build_app() -> gr.Blocks:
             "Práctica oral adaptativa en inglés con feedback en doble canal."
         )
 
-        # Selectores de perfil: [Nivel MCER, Registro Social, Escenario]
+        # Fila 1: Nivel y Registro
         with gr.Row():
             level_selector = gr.Dropdown(
                 choices=["A2", "B2", "C1"],
                 value="A2",
                 label="Nivel MCER",
+                info="Selecciona tu nivel objetivo.",
             )
             register_selector = gr.Dropdown(
                 choices=[
@@ -358,13 +358,32 @@ def build_app() -> gr.Blocks:
                 ],
                 value=SocialRegister.EVERYDAY.value,
                 label="Registro Pragmático",
+                info="Tono social de la conversación.",
             )
-            scenario_selector = gr.Dropdown(
+
+        # Fila 2: Caja libre para escenario + desplegable de sugerencias al lado
+        with gr.Row():
+            scenario_input = gr.Textbox(
+                value="",
+                label="¿Qué quieres practicar hoy? (Escenario)",
+                placeholder="Escribe aquí la situación (ej. Negociar un alquiler, entrevista médica...)",
+                info="Describe libremente el contexto del diálogo.",
+                scale=3,
+            )
+            scenario_suggestions = gr.Dropdown(
                 choices=DEFAULT_SCENARIOS,
-                value=DEFAULT_SCENARIOS[0],
-                allow_custom_value=True,
-                label="Escenario (Roleplay)",
+                value=None,
+                label="¿No tienes ideas? Elige una sugerencia",
+                info="Al seleccionarla se rellenará automáticamente a la izquierda.",
+                scale=2,
             )
+
+        # Conectar desplegable de sugerencias -> caja de texto libre
+        scenario_suggestions.change(
+            fn=_apply_scenario_suggestion,
+            inputs=[scenario_suggestions],
+            outputs=[scenario_input],
+        )
 
         with gr.Row():
             start_btn = gr.Button("Iniciar Sesión", variant="primary")
@@ -399,9 +418,10 @@ def build_app() -> gr.Blocks:
         # Eventos de control de sesión
         start_btn.click(
             fn=start_session_handler,
-            inputs=[level_selector, register_selector, scenario_selector, session_state],
+            inputs=[level_selector, register_selector, scenario_input, session_state],
             outputs=[
                 session_state,
+                scenario_input,
                 status_banner,
                 mic_input,
                 send_btn,
@@ -423,7 +443,7 @@ def build_app() -> gr.Blocks:
                 mic_input,
                 level_selector,
                 register_selector,
-                scenario_selector,
+                scenario_input,
                 session_state,
             ],
             outputs=[

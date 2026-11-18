@@ -1,4 +1,22 @@
-"""Wrapper de faster-whisper (CTranslate2) para transcripción STT con timestamps."""
+"""Módulo STT (Speech-to-Text): wrapper de `faster-whisper` sobre CTranslate2.
+
+Este módulo constituye la segunda etapa del pipeline acústico (Capa 3) de YARNA.
+Convierte el segmento de voz normalizado que entrega el VAD en texto transcrito en inglés
+con marcas temporales y puntuación de confianza para el Orquestador Cognitivo (Capa 2).
+
+Decisiones de diseño incluidas:
+1. **Modelos monolingües `.en` (`base.en` / `small.en`)**: al tratarse de un tutor de
+   inglés, los modelos específicos `.en` evitan la fase de detección automática de idioma,
+   reducen la latencia y no "autocorrigen" en exceso los errores reales del alumno L2
+   (algo necesario para que el LLM pueda detectarlos y aplicar *recast*).
+2. **Aceleración GPU NVIDIA con degradación automática a CPU**: si el sistema dispone de
+   GPU CUDA compatible (como una RTX 3050), ejecuta en `cuda` con precisión `float16`.
+   Si faltan librerías CUDA/cuDNN o no hay GPU, cae automáticamente a `cpu` con
+   cuantización `int8` sin interrumpir el servicio.
+3. **Baja latencia (`beam_size=1`, `vad_filter=False`)**: el filtrado de silencios ya lo
+   realizó `VoiceActivityDetector` aguas arriba, por lo que desactivar el VAD interno de
+   Whisper y usar búsqueda voraz (`beam_size=1`) ayuda a cumplir el objetivo $p95 < 1.8\\text{ s}$.
+"""
 
 from __future__ import annotations
 
@@ -15,11 +33,24 @@ from src.config import SAMPLE_RATE, Settings
 
 logger = logging.getLogger(__name__)
 
+# Tamaños de Whisper oficiales que disponen de variante específica solo en inglés (`.en`).
 _ENGLISH_ONLY_SIZES: frozenset[str] = frozenset({"tiny", "base", "small", "medium"})
 
 
 def resolve_whisper_model_name(model_size: str, prefer_english_model: bool = True) -> str:
-    """Añade el sufijo `.en` a modelos base en inglés cuando corresponde."""
+    """Resuelve el identificador exacto del modelo Whisper a cargar.
+
+    Si `prefer_english_model` es `True` y se pide un tamaño estándar (`tiny`, `base`,
+    `small`, `medium`), añade el sufijo `.en`. Rutas locales o modelos como `large-v3`
+    se mantienen intactos.
+
+    Args:
+        model_size: Nombre o ruta del modelo configurado (p. ej. `"base"`, `"small.en"`).
+        prefer_english_model: Si es `True`, prioriza variantes monolingües en inglés.
+
+    Returns:
+        Nombre normalizado del modelo listo para pasar a `WhisperModel`.
+    """
     cleaned = model_size.strip()
     if prefer_english_model and cleaned in _ENGLISH_ONLY_SIZES:
         return f"{cleaned}.en"
@@ -27,7 +58,14 @@ def resolve_whisper_model_name(model_size: str, prefer_english_model: bool = Tru
 
 
 def detect_cuda_available() -> bool:
-    """Comprueba si hay GPU NVIDIA utilizable por CTranslate2 o PyTorch."""
+    """Comprueba de forma segura si existe alguna GPU NVIDIA lista para CUDA.
+
+    Consulta primero `ctranslate2` (motor real de `faster-whisper`) y, si no está
+    instalado aún, consulta `torch.cuda.is_available()`.
+
+    Returns:
+        `True` si hay al menos una GPU CUDA utilizable; `False` en caso contrario.
+    """
     try:
         import ctranslate2
 
@@ -45,7 +83,11 @@ def detect_cuda_available() -> bool:
 
 
 class FasterWhisperSTT:
-    """Motor STT local cuantizado (FP16 en GPU NVIDIA con fallback a INT8 en CPU)."""
+    """Motor STT local cuantizado (`FP16` en GPU NVIDIA con fallback a `INT8` en CPU).
+
+    La carga de pesos en memoria se realiza de forma perezosa (*lazy loading*) la primera
+    vez que se invoca `transcribe()`, evitando ralentizar el arranque de la interfaz UI.
+    """
 
     def __init__(
         self,
@@ -56,6 +98,17 @@ class FasterWhisperSTT:
         prefer_english_model: bool = True,
         download_root: str | None = None,
     ) -> None:
+        """Configura los parámetros del motor `faster-whisper`.
+
+        Args:
+            settings: Configuración global opcional (`Settings`). Si se omite, se leen las
+                variables de entorno con autodetección automática de GPU.
+            model_size: Sobrescribe el tamaño de modelo (`tiny`, `base`, `small`, etc.).
+            device: Fuerza el dispositivo (`"cuda"`, `"cpu"` o `"auto"`).
+            compute_type: Tipo numérico en CTranslate2 (`"float16"`, `"int8"`, etc.).
+            prefer_english_model: Añade `.en` automáticamente a los tamaños estándar.
+            download_root: Carpeta donde almacenar en caché los pesos descargados.
+        """
         self._explicit_settings = settings is not None
         self.settings = settings or Settings()
 
@@ -68,6 +121,7 @@ class FasterWhisperSTT:
             device=device,
             compute_type=compute_type,
         )
+        # El modelo real `WhisperModel` se instancia en la primera llamada a `transcribe()`.
         self._model: Any = None
 
     def _resolve_device_and_compute_type(
@@ -75,6 +129,14 @@ class FasterWhisperSTT:
         device: str | None,
         compute_type: str | None,
     ) -> tuple[str, str]:
+        """Determina el par `(device, compute_type)` óptimo respetando prioridades.
+
+        Orden de prioridad:
+        1. Argumento explícito recibido en el constructor (`device` / `compute_type`).
+        2. Objeto `Settings` pasado explícitamente por código.
+        3. Variables de entorno (`WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE`).
+        4. Autodetección de GPU (`cuda` + `float16` si hay GPU, `cpu` + `int8` si no).
+        """
         env_device = os.getenv("WHISPER_DEVICE")
         env_compute = os.getenv("WHISPER_COMPUTE_TYPE")
 
@@ -101,13 +163,15 @@ class FasterWhisperSTT:
         else:
             chosen_compute = "int8"
 
+        # Evitamos la combinación cuda + int8 por defecto si proviene de un valor pensado para CPU,
+        # ya que float16 ofrece mejor soporte y estabilidad en GPUs RTX para modelos pequeños.
         if chosen_device == "cuda" and chosen_compute == "int8":
             chosen_compute = "float16"
 
         return chosen_device, chosen_compute
 
     def _ensure_model_loaded(self) -> None:
-        """Carga perezosa de WhisperModel con degradación automática a CPU si falla CUDA."""
+        """Carga en memoria `WhisperModel` bajo demanda y aplica fallback a CPU si falla CUDA."""
         if self._model is not None:
             return
 
@@ -121,6 +185,8 @@ class FasterWhisperSTT:
                 download_root=self.download_root,
             )
         except Exception as exc:
+            # Si CUDA falla (p. ej. falta cuDNN/cuBLAS o memoria VRAM), no bloqueamos el tutor:
+            # degradamos automáticamente a CPU INT8 y actualizamos el estado interno.
             if self.device != "cuda":
                 raise
             logger.warning(
@@ -138,6 +204,11 @@ class FasterWhisperSTT:
 
     @staticmethod
     def _resample_if_needed(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Re-muestrea el audio a 16 000 Hz si procede de un micrófono o WAV a otra frecuencia.
+
+        Usa filtrado polifásico racional (`resample_poly`) reduciendo la fracción por el
+        máximo común divisor (`math.gcd`) para máxima calidad y rapidez.
+        """
         if sample_rate == SAMPLE_RATE or audio.size == 0:
             return audio
         divisor = math.gcd(sample_rate, SAMPLE_RATE)
@@ -152,7 +223,24 @@ class FasterWhisperSTT:
         sample_rate: int = SAMPLE_RATE,
         language: str = "en",
     ) -> dict[str, Any]:
-        """Transcribe audio PCM 16 kHz devolviendo texto, marcas temporales y confianza."""
+        """Transcribe un fragmento de audio PCM devolviendo texto, timestamps y confianza.
+
+        Args:
+            audio: Señal de voz (entera o flotante, mono o estéreo). Se normalizará a
+                16 000 Hz `float32` en `[-1.0, 1.0]` antes de entrar a Whisper.
+            sample_rate: Frecuencia de muestreo del audio de entrada en Hz.
+            language: Código ISO del idioma esperado (por defecto `"en"`).
+
+        Returns:
+            Diccionario con:
+            - `text` (`str`): Transcripción completa concatenada.
+            - `inicio_ms` (`int`): Instante inicial de habla en milisegundos.
+            - `fin_ms` (`int`): Instante final de habla en milisegundos.
+            - `confidence` (`float`): Confianza media ponderada en `[0.0, 1.0]`.
+            - `segments` (`list[dict]`): Detalle por segmento con marcas temporales.
+            - `device` (`str`): Dispositivo usado finalmente (`"cuda"` o `"cpu"`).
+            - `model_name` (`str`): Modelo ejecutado (p. ej. `"base.en"`).
+        """
         pcm = normalize_pcm(audio, peak_normalize=True)
         if pcm.size == 0:
             return {
@@ -168,14 +256,15 @@ class FasterWhisperSTT:
         pcm = self._resample_if_needed(pcm, sample_rate)
         self._ensure_model_loaded()
 
+        # En modelos `.en` fijamos siempre "en" para ahorrar cualquier comprobación de idioma.
         effective_lang = "en" if self.model_name.endswith(".en") else language
         segments_iter, _ = self._model.transcribe(
             pcm,
             language=effective_lang,
             beam_size=1,
             best_of=1,
-            vad_filter=False,
-            condition_on_previous_text=False,
+            vad_filter=False,  # El filtrado VAD ya lo realizó `VoiceActivityDetector`.
+            condition_on_previous_text=False,  # Evita bucles repetitivos en frases cortas L2.
         )
 
         segments: list[dict[str, Any]] = []
@@ -183,15 +272,20 @@ class FasterWhisperSTT:
         total_weight = 0.0
         texts: list[str] = []
 
+        # `faster-whisper` devuelve un generador; al iterarlo se ejecuta la decodificación real.
         for seg in segments_iter:
             text_piece = str(getattr(seg, "text", "")).strip()
             start_ms = int(round(float(getattr(seg, "start", 0.0)) * 1000))
             end_ms = int(round(float(getattr(seg, "end", 0.0)) * 1000))
             avg_logprob = float(getattr(seg, "avg_logprob", -1.0))
+
+            # Convertimos el logaritmo de probabilidad media (<= 0) en probabilidad [0, 1].
             seg_conf = float(min(1.0, max(0.0, math.exp(max(-10.0, min(0.0, avg_logprob))))))
 
             if text_piece:
                 texts.append(text_piece)
+
+            # Ponderamos la confianza global según la longitud de cada segmento.
             weight = float(max(1, len(text_piece)))
             weighted_conf_sum += seg_conf * weight
             total_weight += weight

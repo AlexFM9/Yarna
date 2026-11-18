@@ -36,6 +36,13 @@ class UISessionState:
         self.tts: Any = None
 
 
+def _parse_cefr_level(level_str: str) -> CEFRLevel:
+    """Convierte la selección de la UI ('A2', 'B2', 'C1') al enum interno CEFRLevel."""
+    if level_str in ("B2", "C1", CEFRLevel.B2_C1.value):
+        return CEFRLevel.B2_C1
+    return CEFRLevel.A2
+
+
 def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.ndarray | None:
     """Convierte el audio de Gradio a PCM mono 16 kHz float32 en [-1.0, 1.0]."""
     if audio_tuple is None:
@@ -203,19 +210,20 @@ def start_session_handler(
     session: UISessionState,
 ):
     """Inicia la sesión de práctica oral y configura el perfil."""
+    cefr_enum = _parse_cefr_level(level)
     session.profile = SessionProfile(
-        level=CEFRLevel(level),
+        level=cefr_enum,
         register_mode=SocialRegister(register_mode),
         scenario=scenario or DEFAULT_SCENARIOS[0],
     )
     session.history.clear()
     session.last_activity_ts = time.monotonic()
     state = _safe_fsm_transition(session.fsm, "start_session")
-    timeout = LEVEL_PARAMS[level]["silence_timeout_sec"]
+    timeout = LEVEL_PARAMS[cefr_enum.value]["silence_timeout_sec"]
 
     return (
         session,
-        f"**Estado:** `{state.value}` | **Timeout silencio:** `{timeout}s`",
+        f"**Estado:** `{state.value}` | **Nivel:** `{level}` | **Timeout silencio:** `{timeout}s`",
         gr.update(interactive=True),
         gr.update(interactive=True),
         _format_transcript(session.history),
@@ -253,7 +261,7 @@ def process_turn_handler(
         )
 
     session.profile = SessionProfile(
-        level=CEFRLevel(level),
+        level=_parse_cefr_level(level),
         register_mode=SocialRegister(register_mode),
         scenario=scenario or DEFAULT_SCENARIOS[0],
     )
@@ -338,8 +346,8 @@ def build_app() -> gr.Blocks:
         # Selectores de perfil: [Nivel MCER, Registro Social, Escenario]
         with gr.Row():
             level_selector = gr.Dropdown(
-                choices=[CEFRLevel.A2.value, CEFRLevel.B2_C1.value],
-                value=CEFRLevel.A2.value,
+                choices=["A2", "B2", "C1"],
+                value="A2",
                 label="Nivel MCER",
             )
             register_selector = gr.Dropdown(

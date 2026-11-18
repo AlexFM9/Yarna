@@ -1,4 +1,4 @@
-"""Capa 1: Interfaz web Gradio estilo WhatsApp de doble canal e integración End-to-End."""
+"""Capa 1: Interfaz web Gradio estilo WhatsApp con vista de configuración, carpetas y doble canal."""
 
 from __future__ import annotations
 
@@ -25,11 +25,12 @@ from src.core.schemas import (
 from src.core.state_machine import StateMachine, SystemState
 
 
+DEFAULT_FOLDERS: list[str] = ["General", "Trabajo y Estudios", "Viajes y Ocio"]
+
 CUSTOM_CSS = """
 :root {
     --wa-bg-app: #efeae2;
     --wa-sidebar-bg: #ffffff;
-    --wa-header-bg: #075e54;
     --wa-header-grad: linear-gradient(135deg, #075e54 0%, #128c7e 100%);
     --wa-chat-bg: #efeae2;
     --wa-bubble-user: #d9fdd3;
@@ -47,7 +48,6 @@ CUSTOM_CSS = """
 .dark {
     --wa-bg-app: #0b141a;
     --wa-sidebar-bg: #111b21;
-    --wa-header-bg: #202c33;
     --wa-header-grad: linear-gradient(135deg, #111b21 0%, #202c33 100%);
     --wa-chat-bg: #0b141a;
     --wa-bubble-user: #005c4b;
@@ -73,7 +73,7 @@ CUSTOM_CSS = """
     color: #ffffff;
     padding: 16px 24px;
     border-radius: 14px;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
 }
 .wa-top-banner h1 {
@@ -86,6 +86,16 @@ CUSTOM_CSS = """
     margin: 0 !important;
     font-size: 0.9rem !important;
     color: #d1fae5 !important;
+}
+
+.setup-card {
+    max-width: 760px !important;
+    margin: 12px auto !important;
+    background: var(--wa-panel-bg) !important;
+    border: 1px solid var(--wa-border) !important;
+    border-radius: 18px !important;
+    padding: 26px 30px !important;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08) !important;
 }
 
 .wa-column {
@@ -128,7 +138,6 @@ CUSTOM_CSS = """
     line-height: 1.45;
     color: var(--wa-text-main);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-    position: relative;
 }
 .wa-bubble.user {
     background: var(--wa-bubble-user);
@@ -170,9 +179,6 @@ CUSTOM_CSS = """
     border-top: 1px dashed var(--wa-border);
     font-size: 0.8rem;
     font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 6px;
 }
 .wa-card-link.grammar {
     color: var(--wa-err-grammar-line);
@@ -191,7 +197,7 @@ CUSTOM_CSS = """
     padding: 8px 14px;
     border-radius: 10px;
     font-weight: 600;
-    font-size: 0.88rem;
+    font-size: 0.86rem;
     border: 1px solid var(--wa-border);
     background: var(--wa-panel-bg);
     color: var(--wa-text-main);
@@ -302,7 +308,7 @@ THEME_TOGGLE_JS = """
 
 @dataclass
 class ChatMessage:
-    """Representa una burbuja individual dentro de un chat."""
+    """Burbuja individual dentro de un chat."""
 
     sender: str  # "user" | "tutor"
     text: str
@@ -313,10 +319,11 @@ class ChatMessage:
 
 @dataclass
 class ChatThread:
-    """Representa un chat independiente (como una conversación en WhatsApp)."""
+    """Conversación independiente organizada dentro de una carpeta."""
 
     chat_id: str
     title: str
+    folder: str
     level_label: str
     profile: SessionProfile
     messages: list[ChatMessage] = field(default_factory=list)
@@ -324,7 +331,7 @@ class ChatThread:
 
 
 class UISessionState:
-    """Estado aislado por usuario con múltiples chats activos."""
+    """Estado aislado por usuario con carpetas y múltiples chats."""
 
     def __init__(self) -> None:
         self.fsm: StateMachine = StateMachine()
@@ -334,23 +341,15 @@ class UISessionState:
         self.stt: Any = None
         self.tts: Any = None
 
-        # Crear 2 chats iniciales de ejemplo listos para usar
-        c1 = self._create_thread(
-            title=DEFAULT_SCENARIOS[0],
-            level_label="A2",
-            register_mode=SocialRegister.EVERYDAY,
-        )
-        c2 = self._create_thread(
-            title=DEFAULT_SCENARIOS[1],
-            level_label="B2",
-            register_mode=SocialRegister.FORMAL,
-        )
-        self.chats: dict[str, ChatThread] = {c1.chat_id: c1, c2.chat_id: c2}
-        self.active_chat_id: str = c1.chat_id
+        self.folders: list[str] = list(DEFAULT_FOLDERS)
+        self.selected_folder_filter: str = "Todas"
+        self.chats: dict[str, ChatThread] = {}
+        self.active_chat_id: str | None = None
 
     @staticmethod
     def _create_thread(
         title: str,
+        folder: str,
         level_label: str,
         register_mode: SocialRegister,
     ) -> ChatThread:
@@ -358,6 +357,7 @@ class UISessionState:
         return ChatThread(
             chat_id=str(uuid.uuid4())[:8],
             title=title,
+            folder=folder,
             level_label=level_label,
             profile=SessionProfile(
                 level=cefr_enum,
@@ -367,17 +367,27 @@ class UISessionState:
         )
 
     @property
-    def active_chat(self) -> ChatThread:
-        return self.chats[self.active_chat_id]
+    def active_chat(self) -> ChatThread | None:
+        if self.active_chat_id and self.active_chat_id in self.chats:
+            return self.chats[self.active_chat_id]
+        return None
+
+    def folder_filter_choices(self) -> list[str]:
+        return ["Todas"] + self.folders
 
     def chat_choices(self) -> list[tuple[str, str]]:
-        choices = []
+        choices: list[tuple[str, str]] = []
         for cid, chat in self.chats.items():
+            if (
+                self.selected_folder_filter != "Todas"
+                and chat.folder != self.selected_folder_filter
+            ):
+                continue
             err_count = sum(
                 1 for _, _, c in chat.error_cards if c.category != CorrectionCategory.OK
             )
             badge = f" · {err_count} corr." if err_count > 0 else ""
-            label = f"💬 {chat.title} [{chat.level_label} · {chat.profile.register_mode.value}{badge}]"
+            label = f"📁 {chat.folder} | 💬 {chat.title} [{chat.level_label}{badge}]"
             choices.append((label, cid))
         return choices
 
@@ -426,15 +436,18 @@ def _highlight_user_mistakes(user_text: str, card: VisualCard | None) -> str:
     return " ".join(highlighted_tokens)
 
 
-def _render_chat_window(chat: ChatThread) -> str:
+def _render_chat_window(chat: ChatThread | None) -> str:
     """Renderiza las burbujas de conversación estilo WhatsApp con errores subrayados."""
+    if chat is None:
+        return "<div class='wa-chat-window'></div>"
+
     if not chat.messages:
         return (
             "<div class='wa-chat-window'>"
-            "<div style='margin:auto; text-align:center; color:var(--wa-text-muted); max-width:360px;'>"
-            f"<b>Escenario:</b> {html.escape(chat.title)}<br/>"
+            "<div style='margin:auto; text-align:center; color:var(--wa-text-muted); max-width:380px;'>"
+            f"<b>📁 {html.escape(chat.folder)} · {html.escape(chat.title)}</b><br/>"
             f"<small>Nivel {html.escape(chat.level_label)} · Registro {html.escape(chat.profile.register_mode.value)}</small><br/><br/>"
-            "Pulsa <b>▶ Iniciar Sesión</b>, graba tu voz y envía tu primer mensaje."
+            "El micrófono ya está listo. Graba tu primera intervención y pulsa <b>Enviar ➤</b>."
             "</div></div>"
         )
 
@@ -447,13 +460,13 @@ def _render_chat_window(chat: ChatThread) -> str:
                 if msg.card.category == CorrectionCategory.GRAMMAR:
                     footer_html = (
                         f"<div class='wa-card-link grammar'>"
-                        f"🟠 Error gramatical subrayado → Ver Tarjeta #{msg.card_index}"
+                        f"🟠 Error gramatical subrayado → Tarjeta #{msg.card_index}"
                         f"</div>"
                     )
                 elif msg.card.category == CorrectionCategory.PRAGMATICS:
                     footer_html = (
                         f"<div class='wa-card-link pragmatics'>"
-                        f"🟣 Matiz de registro subrayado → Ver Tarjeta #{msg.card_index}"
+                        f"🟣 Matiz de registro subrayado → Tarjeta #{msg.card_index}"
                         f"</div>"
                     )
                 else:
@@ -480,9 +493,9 @@ def _render_chat_window(chat: ChatThread) -> str:
     return "".join(bubbles_html)
 
 
-def _render_error_cards(chat: ChatThread) -> str:
+def _render_error_cards(chat: ChatThread | None) -> str:
     """Genera las tarjetas visuales acumuladas a partir de los errores subrayados del chat."""
-    if not chat.error_cards:
+    if chat is None or not chat.error_cards:
         return (
             "<div class='error-cards-feed'>"
             "<div style='color:var(--wa-text-muted); padding:16px; text-align:center;'>"
@@ -491,7 +504,6 @@ def _render_error_cards(chat: ChatThread) -> str:
         )
 
     cards_html: list[str] = ["<div class='error-cards-feed'>"]
-    # Mostrar las más recientes arriba
     for idx, original_text, card in reversed(chat.error_cards):
         if card.category == CorrectionCategory.GRAMMAR:
             kind_cls = "grammar"
@@ -526,10 +538,10 @@ def _render_error_cards(chat: ChatThread) -> str:
 def _render_status_badge(state: SystemState, detail: str = "") -> str:
     """Genera un indicador HTML estilizado según el estado de la StateMachine."""
     styles = {
-        SystemState.IDLE: ("status-pill", "⚪", "INACTIVO"),
+        SystemState.IDLE: ("status-pill", "⚪", "PAUSADO"),
         SystemState.LISTENING: ("status-pill status-listening", "🟢", "EN LÍNEA · ESCUCHANDO"),
-        SystemState.PROCESSING: ("status-pill status-processing", "🟡", "ESCRIBIENDO / PROCESANDO..."),
-        SystemState.SPEAKING: ("status-pill status-speaking", "🔵", "ENVIANDO AUDIO (MIC BLOQUEADO)"),
+        SystemState.PROCESSING: ("status-pill status-processing", "🟡", "PROCESANDO..."),
+        SystemState.SPEAKING: ("status-pill status-speaking", "🔵", "TUTOR HABLANDO (MIC BLOQUEADO)"),
     }
     css_class, icon, label = styles.get(state, ("status-pill", "⚪", state.value))
     extra = f" &nbsp;·&nbsp; <span style='font-weight:400'>{detail}</span>" if detail else ""
@@ -646,21 +658,20 @@ def _run_pipeline_turn(
         return tutor_resp, (SAMPLE_RATE, tts_audio)
 
     except (ImportError, NotImplementedError, AttributeError, TypeError):
-        # Simulación demostrativa de subrayado de error + tarjeta visual
         turn_num = len(chat.messages) // 2 + 1
         if turn_num % 2 == 1:
             simulated = TutorResponse(
                 transcript="Hello, I want a coffee and I go to work yesterday.",
                 oral_response=(
-                    f"Sure! Let's continue our '{chat.title}' roleplay. "
-                    "What else do you need today?"
+                    f"Sure! Let's practice '{chat.title}'. "
+                    "What else would you like to say?"
                 ),
                 visual_card=VisualCard(
                     correction="Hello, I would like a coffee and I went to work yesterday.",
                     category=CorrectionCategory.GRAMMAR,
                     explanation=(
-                        "Para acciones pasadas ('yesterday') usamos el pasado simple 'went' "
-                        "en lugar de 'go', y 'I would like' suena más natural al pedir."
+                        "Para acciones pasadas ('yesterday') usamos 'went' en lugar de 'go', "
+                        "y 'I would like' suena más natural que 'I want'."
                     ),
                 ),
                 prosody_flags=ProsodyFlags(rate=level_cfg["speech_rate"], pitch=0.0),
@@ -668,12 +679,12 @@ def _run_pipeline_turn(
         else:
             simulated = TutorResponse(
                 transcript="Give me the menu right now.",
-                oral_response="Of course, here is the menu. Take your time to look through it.",
+                oral_response="Of course, here is the menu. Take your time.",
                 visual_card=VisualCard(
                     correction="Could you please bring me the menu?",
                     category=CorrectionCategory.PRAGMATICS,
                     explanation=(
-                        "En este registro social, 'Give me... right now' suena demasiado brusco. "
+                        "En este registro social, 'Give me... right now' resulta demasiado directo. "
                         "Usa 'Could you please...' para sonar cortés."
                     ),
                 ),
@@ -686,67 +697,112 @@ def _apply_scenario_suggestion(suggestion: str | None) -> str:
     return suggestion or ""
 
 
-def create_new_chat_handler(
+def start_new_chat_from_setup(
     level: str,
     register_mode: str,
+    folder_choice: str,
+    new_folder_name: str,
     scenario: str,
     session: UISessionState,
 ):
-    """Crea un nuevo hilo de chat independiente (como un nuevo chat en WhatsApp)."""
+    """Crea el chat desde la pantalla inicial, oculta la configuración y abre la vista de chat."""
+    # Resolver carpeta (si escribió una nueva carpeta, se añade a la lista)
+    folder = new_folder_name.strip() if new_folder_name and new_folder_name.strip() else folder_choice
+    if not folder:
+        folder = DEFAULT_FOLDERS[0]
+    if folder not in session.folders:
+        session.folders.append(folder)
+
     title = scenario.strip() if scenario and scenario.strip() else DEFAULT_SCENARIOS[0]
     new_thread = session._create_thread(
         title=title,
+        folder=folder,
         level_label=level,
         register_mode=SocialRegister(register_mode),
     )
     session.chats[new_thread.chat_id] = new_thread
     session.active_chat_id = new_thread.chat_id
+    session.selected_folder_filter = "Todas"
+
     state = _safe_fsm_transition(session.fsm, "start_session")
     session.last_activity_ts = time.monotonic()
+    timeout = LEVEL_PARAMS[new_thread.profile.level.value]["silence_timeout_sec"]
 
     return (
         session,
+        gr.update(visible=False),  # Oculta setup_view
+        gr.update(visible=True),   # Muestra chat_view
+        gr.update(choices=session.folder_filter_choices(), value="Todas"),
         gr.update(choices=session.chat_choices(), value=new_thread.chat_id),
-        "",
-        _render_status_badge(state, f"Chat activo: {new_thread.title}"),
+        gr.update(choices=session.folders, value=new_thread.folder),
+        _render_status_badge(state, f"📁 {folder} · {title} (Nivel {level}, timeout {timeout}s)"),
         _render_chat_window(new_thread),
         _render_error_cards(new_thread),
-        gr.update(interactive=True),
+        gr.update(value=None, interactive=True),
         gr.update(interactive=True),
     )
 
 
+def open_setup_for_another_chat(session: UISessionState):
+    """Vuelve a mostrar las opciones de configuración al pulsar 'Otro Chat'."""
+    _safe_fsm_transition(session.fsm, "stop_session")
+    return (
+        session,
+        gr.update(visible=True),   # Muestra setup_view
+        gr.update(visible=False),  # Oculta chat_view
+        gr.update(choices=session.folders, value=session.folders[0]),
+        "",  # Limpia caja de nueva carpeta
+        "",  # Limpia caja de tema
+        None,
+    )
+
+
+def filter_chats_by_folder(folder_filter: str, session: UISessionState):
+    """Filtra la lista lateral de conversaciones según la carpeta elegida."""
+    session.selected_folder_filter = folder_filter or "Todas"
+    choices = session.chat_choices()
+    current_val = (
+        session.active_chat_id
+        if any(cid == session.active_chat_id for _, cid in choices)
+        else (choices[0][1] if choices else None)
+    )
+    return session, gr.update(choices=choices, value=current_val)
+
+
+def move_active_chat_to_folder(target_folder: str, session: UISessionState):
+    """Permite mover el chat actual a otra carpeta."""
+    chat = session.active_chat
+    if chat is None or not target_folder:
+        return session, gr.update(), gr.update()
+    chat.folder = target_folder
+    return (
+        session,
+        gr.update(choices=session.chat_choices(), value=chat.chat_id),
+        _render_status_badge(session.fsm.state, f"📁 {chat.folder} · {chat.title}"),
+    )
+
+
 def switch_chat_handler(selected_chat_id: str, session: UISessionState):
-    """Cambia entre los chats existentes manteniendo el historial y tarjetas de cada uno."""
+    """Cambia entre los chats guardados en la barra lateral."""
     if selected_chat_id and selected_chat_id in session.chats:
         session.active_chat_id = selected_chat_id
     chat = session.active_chat
+    if chat is None:
+        return session, gr.update(), gr.update(), gr.update(), gr.update()
+
+    state = _safe_fsm_transition(session.fsm, "start_session")
+    session.last_activity_ts = time.monotonic()
     return (
         session,
-        chat.level_label,
-        chat.profile.register_mode.value,
-        _render_status_badge(session.fsm.state, f"Chat: {chat.title}"),
+        gr.update(choices=session.folders, value=chat.folder),
+        _render_status_badge(state, f"📁 {chat.folder} · {chat.title} ({chat.level_label})"),
         _render_chat_window(chat),
         _render_error_cards(chat),
     )
 
 
-def start_session_handler(session: UISessionState):
-    """Activa el micrófono en el chat actual."""
-    chat = session.active_chat
-    state = _safe_fsm_transition(session.fsm, "start_session")
-    session.last_activity_ts = time.monotonic()
-    timeout = LEVEL_PARAMS[chat.profile.level.value]["silence_timeout_sec"]
-    return (
-        session,
-        _render_status_badge(state, f"{chat.title} · Timeout {timeout}s"),
-        gr.update(interactive=True),
-        gr.update(interactive=True),
-    )
-
-
 def stop_session_handler(session: UISessionState):
-    """Detiene la escucha activa."""
+    """Pausa la escucha activa en el chat actual."""
     state = _safe_fsm_transition(session.fsm, "stop_session")
     return (
         session,
@@ -756,12 +812,37 @@ def stop_session_handler(session: UISessionState):
     )
 
 
+def resume_session_handler(session: UISessionState):
+    """Reanuda la escucha activa en el chat actual."""
+    chat = session.active_chat
+    state = _safe_fsm_transition(session.fsm, "start_session")
+    session.last_activity_ts = time.monotonic()
+    detail = f"📁 {chat.folder} · {chat.title}" if chat else ""
+    return (
+        session,
+        _render_status_badge(state, detail),
+        gr.update(interactive=True),
+        gr.update(interactive=True),
+    )
+
+
 def process_turn_handler(
     audio_input: tuple[int, np.ndarray] | None,
     session: UISessionState,
 ):
     """Procesa el turno de voz, subraya errores en la burbuja y genera la tarjeta visual."""
     chat = session.active_chat
+    if chat is None:
+        return (
+            session,
+            _render_status_badge(SystemState.IDLE, "Crea un chat primero"),
+            None,
+            _render_chat_window(None),
+            _render_error_cards(None),
+            gr.update(),
+            gr.update(interactive=False),
+        )
+
     if _is_locked(session.fsm):
         return (
             session,
@@ -791,7 +872,6 @@ def process_turn_handler(
     speaking_state = _safe_fsm_transition(session.fsm, "on_response_ready")
     now_str = time.strftime("%H:%M")
 
-    # Registrar tarjeta vinculada al mensaje del usuario
     card_idx = len(chat.error_cards) + 1
     chat.error_cards.append((card_idx, tutor_response.transcript, tutor_response.visual_card))
 
@@ -837,10 +917,10 @@ def on_audio_playback_end(session: UISessionState):
 
 def check_silence_timeout(session: UISessionState):
     """Comprueba el timeout de silencio en LISTENING y envía mensaje de reenganche al chat."""
-    if session.fsm.state != SystemState.LISTENING:
+    chat = session.active_chat
+    if chat is None or session.fsm.state != SystemState.LISTENING:
         return session, gr.update(), gr.update()
 
-    chat = session.active_chat
     timeout = LEVEL_PARAMS[chat.profile.level.value]["silence_timeout_sec"]
     if time.monotonic() - session.last_activity_ts < timeout:
         return session, gr.update(), gr.update()
@@ -868,7 +948,7 @@ def check_silence_timeout(session: UISessionState):
 
 
 def build_app() -> gr.Blocks:
-    """Construye la interfaz estilo WhatsApp de doble canal de YARNA."""
+    """Construye la interfaz estilo WhatsApp con pantalla de inicio, carpetas y doble canal."""
     theme = gr.themes.Soft(
         primary_hue="emerald",
         secondary_hue="slate",
@@ -882,17 +962,15 @@ def build_app() -> gr.Blocks:
         css=CUSTOM_CSS,
     ) as demo:
         session_state = gr.State(UISessionState)
-        initial_state = UISessionState()
-        first_chat = initial_state.active_chat
 
-        # Cabecera + Modo Claro/Oscuro
+        # Cabecera global + Selector de Tema
         with gr.Row(equal_height=True):
             with gr.Column(scale=5):
                 gr.HTML(
                     """
                     <div class="wa-top-banner">
-                        <h1>💬 YARNA — Tutor Conversacional por Chats</h1>
-                        <p>Cada escenario es un chat independiente. Tus errores se subrayan en color y generan tarjetas de mejora al instante.</p>
+                        <h1>💬 YARNA — Tutor Conversacional Adaptativo</h1>
+                        <p>Configura tu escenario, practica por voz estilo chat y aprende con subrayado inteligente y tarjetas de error.</p>
                     </div>
                     """
                 )
@@ -911,25 +989,21 @@ def build_app() -> gr.Blocks:
             js=THEME_TOGGLE_JS,
         )
 
-        # Layout de 3 columnas estilo WhatsApp Web:
-        # [1. Lista de Chats + Nuevo Chat] | [2. Conversación + Audio] | [3. Tarjetas de Errores]
-        with gr.Row(equal_height=False):
-            # COLUMNA 1: Mis Chats + Crear Nuevo Chat
-            with gr.Column(scale=3, elem_classes=["wa-column"]):
-                gr.Markdown("### 🗂️ Mis Chats")
-                chat_list = gr.Radio(
-                    choices=initial_state.chat_choices(),
-                    value=first_chat.chat_id,
-                    label="Conversaciones activas",
-                    interactive=True,
-                )
+        # =====================================================================
+        # VISTA 1: CONFIGURACIÓN PREVIA AL CHAT (Visible al inicio o al pulsar "Otro Chat")
+        # =====================================================================
+        with gr.Column(visible=True, elem_classes=["setup-card"]) as setup_view:
+            gr.Markdown("## ✨ Configura tu nueva conversación")
+            gr.Markdown(
+                "Elige tu nivel, el tono social, la carpeta donde guardarla y el tema sobre el que quieres hablar."
+            )
 
-                gr.Markdown("---")
-                gr.Markdown("#### ➕ Nuevo Chat de Práctica")
+            with gr.Row():
                 level_selector = gr.Dropdown(
                     choices=["A2", "B2", "C1"],
                     value="A2",
-                    label="Nivel MCER",
+                    label="🎯 Nivel MCER",
+                    info="Adapta vocabulario y velocidad.",
                 )
                 register_selector = gr.Dropdown(
                     choices=[
@@ -938,45 +1012,101 @@ def build_app() -> gr.Blocks:
                         SocialRegister.EVERYDAY.value,
                     ],
                     value=SocialRegister.EVERYDAY.value,
-                    label="Registro Pragmático",
+                    label="🎭 Registro Pragmático",
+                    info="Formal, informal o cotidiano.",
                 )
+
+            with gr.Row():
+                folder_selector = gr.Dropdown(
+                    choices=DEFAULT_FOLDERS,
+                    value=DEFAULT_FOLDERS[0],
+                    label="📁 Guardar en carpeta",
+                    info="Organiza tus chats por categorías.",
+                )
+                new_folder_input = gr.Textbox(
+                    value="",
+                    label="➕ O crea una carpeta nueva",
+                    placeholder="Ej. Entrevistas, Exámenes, Médico...",
+                    info="Si escribes aquí, se creará esa carpeta.",
+                )
+
+            with gr.Row():
                 scenario_input = gr.Textbox(
                     value="",
-                    label="✍️ Escribe el tema del chat",
-                    placeholder="Ej. Negociar un alquiler, pedir en un restaurante...",
+                    label="✍️ ¿De qué quieres hablar hoy?",
+                    placeholder="Escribe libremente el tema o situación...",
+                    info="Describe el escenario de roleplay.",
+                    scale=3,
                 )
                 scenario_suggestions = gr.Dropdown(
                     choices=DEFAULT_SCENARIOS,
                     value=None,
                     label="💡 ¿No tienes ideas? Elige una",
+                    info="Rellena el cuadro de la izquierda.",
+                    scale=2,
                 )
-                new_chat_btn = gr.Button("➕ Crear y Abrir Chat", variant="primary")
 
-            # COLUMNA 2: Ventana de Chat (Canal Auditivo + Burbujas)
+            start_chat_btn = gr.Button(
+                "🚀 Empezar Chat",
+                variant="primary",
+                size="lg",
+            )
+
+        # =====================================================================
+        # VISTA 2: ENTORNO DE CHAT ESTILO WHATSAPP (Oculta opciones de setup)
+        # =====================================================================
+        with gr.Row(visible=False, equal_height=False) as chat_view:
+            # COLUMNA 1: Botón "Otro Chat" + Carpetas + Lista de Chats
+            with gr.Column(scale=3, elem_classes=["wa-column"]):
+                another_chat_btn = gr.Button(
+                    "➕ Otro Chat",
+                    variant="primary",
+                )
+                gr.Markdown("---")
+                gr.Markdown("### 📁 Carpetas y Chats")
+                folder_filter_dd = gr.Dropdown(
+                    choices=["Todas"] + DEFAULT_FOLDERS,
+                    value="Todas",
+                    label="Filtrar por carpeta",
+                    interactive=True,
+                )
+                chat_list = gr.Radio(
+                    choices=[],
+                    value=None,
+                    label="Tus conversaciones",
+                    interactive=True,
+                )
+                gr.Markdown("---")
+                move_folder_dd = gr.Dropdown(
+                    choices=DEFAULT_FOLDERS,
+                    value=DEFAULT_FOLDERS[0],
+                    label="Mover este chat a carpeta",
+                    interactive=True,
+                )
+
+            # COLUMNA 2: Ventana de Chat (Burbujas + Micrófono)
             with gr.Column(scale=5, elem_classes=["wa-column"]):
                 with gr.Row(equal_height=True):
-                    start_btn = gr.Button("▶ Iniciar", variant="primary", scale=1)
+                    resume_btn = gr.Button("▶ Escuchar", variant="primary", scale=1)
                     stop_btn = gr.Button("⏹ Pausar", variant="stop", scale=1)
                     status_banner = gr.HTML(
-                        value=_render_status_badge(
-                            SystemState.IDLE, f"Chat: {first_chat.title}"
-                        ),
+                        value=_render_status_badge(SystemState.IDLE),
                     )
 
-                chat_window = gr.HTML(value=_render_chat_window(first_chat))
+                chat_window = gr.HTML(value=_render_chat_window(None))
 
                 with gr.Row(equal_height=True):
                     mic_input = gr.Audio(
                         sources=["microphone", "upload"],
                         type="numpy",
                         label="🎙️ Mensaje de voz (16 kHz)",
-                        interactive=False,
+                        interactive=True,
                         scale=3,
                     )
                     send_btn = gr.Button(
                         "Enviar ➤",
                         variant="primary",
-                        interactive=False,
+                        interactive=True,
                         scale=1,
                     )
 
@@ -992,22 +1122,32 @@ def build_app() -> gr.Blocks:
                 gr.Markdown(
                     "<small>🟠 <b>Subrayado ámbar:</b> Gramática &nbsp;|&nbsp; 🟣 <b>Subrayado violeta:</b> Registro/Pragmática</small>"
                 )
-                error_cards_panel = gr.HTML(value=_render_error_cards(first_chat))
+                error_cards_panel = gr.HTML(value=_render_error_cards(None))
 
-        # Eventos de gestión de chats
+        # Eventos de pantalla de configuración
         scenario_suggestions.change(
             fn=_apply_scenario_suggestion,
             inputs=[scenario_suggestions],
             outputs=[scenario_input],
         )
 
-        new_chat_btn.click(
-            fn=create_new_chat_handler,
-            inputs=[level_selector, register_selector, scenario_input, session_state],
+        start_chat_btn.click(
+            fn=start_new_chat_from_setup,
+            inputs=[
+                level_selector,
+                register_selector,
+                folder_selector,
+                new_folder_input,
+                scenario_input,
+                session_state,
+            ],
             outputs=[
                 session_state,
+                setup_view,
+                chat_view,
+                folder_filter_dd,
                 chat_list,
-                scenario_input,
+                move_folder_dd,
                 status_banner,
                 chat_window,
                 error_cards_panel,
@@ -1016,22 +1156,49 @@ def build_app() -> gr.Blocks:
             ],
         )
 
+        # Botón "Otro Chat": vuelve a mostrar la pantalla de configuración
+        another_chat_btn.click(
+            fn=open_setup_for_another_chat,
+            inputs=[session_state],
+            outputs=[
+                session_state,
+                setup_view,
+                chat_view,
+                folder_selector,
+                new_folder_input,
+                scenario_input,
+                scenario_suggestions,
+            ],
+        )
+
+        # Carpetas y cambio entre chats
+        folder_filter_dd.change(
+            fn=filter_chats_by_folder,
+            inputs=[folder_filter_dd, session_state],
+            outputs=[session_state, chat_list],
+        )
+
+        move_folder_dd.change(
+            fn=move_active_chat_to_folder,
+            inputs=[move_folder_dd, session_state],
+            outputs=[session_state, chat_list, status_banner],
+        )
+
         chat_list.change(
             fn=switch_chat_handler,
             inputs=[chat_list, session_state],
             outputs=[
                 session_state,
-                level_selector,
-                register_selector,
+                move_folder_dd,
                 status_banner,
                 chat_window,
                 error_cards_panel,
             ],
         )
 
-        # Eventos de sesión y voz
-        start_btn.click(
-            fn=start_session_handler,
+        # Controles de voz y turnos
+        resume_btn.click(
+            fn=resume_session_handler,
             inputs=[session_state],
             outputs=[session_state, status_banner, mic_input, send_btn],
         )

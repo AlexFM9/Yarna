@@ -1,4 +1,21 @@
-"""Benchmark offline de Word Error Rate (WER) y RTF sobre subconjunto L2-ARCTIC."""
+"""Benchmark offline de Word Error Rate (WER), CER y RTF sobre el dataset L2-ARCTIC.
+
+Este script evalúa de forma cuantitativa la precisión y velocidad del motor STT
+(`FasterWhisperSTT`) sobre hablantes no nativos de inglés (L2), paso obligatorio para
+la validación experimental del proyecto YARNA.
+
+Métricas que calcula:
+1. **WER (Word Error Rate)**: porcentaje de palabras erróneas respecto a la referencia
+   $(S + D + I) / N$, donde $S$ son sustituciones, $D$ borrados e $I$ inserciones.
+   Cuanto más bajo, mejor.
+2. **CER (Character Error Rate)**: equivalente al WER pero a nivel de carácter; útil
+   para detectar errores leves de morfología o pronunciación L2.
+3. **RTF (Real-Time Factor)**: cociente entre el tiempo de inferencia y la duración real
+   del audio (`tiempo_inferencia / duracion_audio`). Si `RTF < 1.0`, el sistema procesa
+   más rápido que el tiempo real.
+4. **Latencia media y p95 (ms)**: tiempo por locución en milisegundos, para verificar el
+   margen disponible dentro del presupuesto global de $p95 < 1.8\\text{ s}$.
+"""
 
 from __future__ import annotations
 
@@ -15,8 +32,10 @@ import numpy as np
 from src.audio.stt import FasterWhisperSTT
 from src.audio.vad import normalize_pcm
 
+# Códigos oficiales en L2-ARCTIC correspondientes a hablantes nativos de español (L1 = Spanish).
 SPANISH_L2_SPEAKERS: tuple[str, ...] = ("EBVS", "ERMS", "MBMPS", "NJS")
 
+# Diccionario de respaldo para expandir contracciones inglesas si `jiwer` no está instalado.
 _ENGLISH_CONTRACTIONS: dict[str, str] = {
     "ain't": "is not",
     "aren't": "are not",
@@ -58,7 +77,18 @@ _ENGLISH_CONTRACTIONS: dict[str, str] = {
 
 
 def normalize_transcript(text: str) -> str:
-    """Normaliza transcripciones inglesas evitando penalizaciones por puntuación."""
+    """Normaliza una frase inglesa para comparar transcripciones de manera justa.
+
+    Evita que diferencias meramente tipográficas (mayúsculas, comas, puntos o escribir
+    `"I'm"` frente a `"I am"`) cuenten falsamente como errores acústicos en el WER.
+
+    Args:
+        text: Texto original de referencia o hipótesis generada por Whisper.
+
+    Returns:
+        Cadena en minúsculas, sin signos de puntuación, con contracciones expandidas
+        y espacios simples.
+    """
     try:
         import jiwer
 
@@ -73,6 +103,7 @@ def normalize_transcript(text: str) -> str:
         )
         return str(transform(text))
     except ImportError:
+        # Implementación pura en Python equivalente cuando `jiwer` aún no está instalado.
         cleaned = text.lower().replace("’", "'")
         for contraction, expanded in _ENGLISH_CONTRACTIONS.items():
             cleaned = re.sub(rf"\b{re.escape(contraction)}\b", expanded, cleaned)
@@ -82,7 +113,10 @@ def normalize_transcript(text: str) -> str:
 
 
 def _levenshtein_distance(seq_a: list[str] | str, seq_b: list[str] | str) -> int:
-    """Distancia de edición de Levenshtein para cálculo fallback de WER/CER."""
+    """Calcula la distancia mínima de edición (inserciones, borrados, sustituciones).
+
+    Se utiliza únicamente como respaldo cuando la librería `jiwer` no está disponible.
+    """
     if len(seq_a) < len(seq_b):
         return _levenshtein_distance(seq_b, seq_a)
     if len(seq_b) == 0:
@@ -101,7 +135,18 @@ def _levenshtein_distance(seq_a: list[str] | str, seq_b: list[str] | str) -> int
 
 
 def compute_wer_score(references: list[str], hypotheses: list[str]) -> dict[str, float]:
-    """Calcula WER y CER sobre listas de referencias e hipótesis normalizadas."""
+    """Calcula WER y CER globales tras normalizar referencias e hipótesis.
+
+    Args:
+        references: Lista de transcripciones reales (ground truth del dataset).
+        hypotheses: Lista de transcripciones producidas por el motor STT.
+
+    Returns:
+        Diccionario `{"wer": float, "cer": float}` expresado en tanto por uno (0.05 = 5%).
+
+    Raises:
+        ValueError: Si ambas listas no tienen la misma longitud.
+    """
     if len(references) != len(hypotheses):
         raise ValueError("references e hypotheses deben tener la misma longitud.")
     if not references:
@@ -137,7 +182,11 @@ def compute_wer_score(references: list[str], hypotheses: list[str]) -> dict[str,
 
 
 def read_wav_pcm(wav_path: Path) -> tuple[int, np.ndarray]:
-    """Lee un fichero WAV devolviendo (sample_rate, audio_float32)."""
+    """Lee un archivo `.wav` del disco devolviendo `(sample_rate, audio_float32)`.
+
+    Usa `soundfile` si está disponible y recurre al módulo estándar `wave` en caso
+    contrario, sin aplicar normalización de pico por adelantado para no alterar la prueba.
+    """
     try:
         import soundfile as sf
 
@@ -167,7 +216,23 @@ def discover_l2_arctic_samples(
     speakers: list[str] | None = None,
     max_samples: int = 50,
 ) -> list[tuple[Path, str]]:
-    """Localiza pares (audio.wav, transcripción) en estructura L2-ARCTIC o plana."""
+    """Localiza pares `(archivo_audio.wav, texto_referencia)` dentro del dataset.
+
+    Soporta primero la estructura oficial de **L2-ARCTIC**:
+    `<dataset_dir>/<SPEAKER>/wav/<nombre>.wav` + `<dataset_dir>/<SPEAKER>/transcript/<nombre>.txt`.
+    Si no encuentra esa estructura, busca de forma recursiva pares `.wav`/`.txt` hermanos.
+
+    Args:
+        dataset_dir: Carpeta raíz del dataset descargado.
+        speakers: Lista opcional de hablantes a filtrar (p. ej. `["EBVS", "ERMS"]`).
+        max_samples: Número máximo de locuciones a devolver.
+
+    Returns:
+        Lista de tuplas `(ruta_wav, transcripcion_referencia)`.
+
+    Raises:
+        FileNotFoundError: Si `dataset_dir` no existe.
+    """
     root = Path(dataset_dir)
     if not root.exists():
         raise FileNotFoundError(f"No existe el directorio del dataset: {root}")
@@ -175,6 +240,7 @@ def discover_l2_arctic_samples(
     samples: list[tuple[Path, str]] = []
     target_speakers = {s.upper() for s in speakers} if speakers else None
 
+    # Búsqueda prioritaria con jerarquía oficial L2-ARCTIC (<SPEAKER>/wav y /transcript).
     for speaker_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         if target_speakers and speaker_dir.name.upper() not in target_speakers:
             continue
@@ -193,6 +259,7 @@ def discover_l2_arctic_samples(
                 if len(samples) >= max_samples:
                     return samples
 
+    # Búsqueda de respaldo para carpetas planas con .wav y .txt en el mismo directorio.
     if not samples:
         for wav_path in sorted(root.rglob("*.wav")):
             txt_path = wav_path.with_suffix(".txt")
@@ -215,7 +282,20 @@ def evaluate_wer(
     device: str | None = None,
     stt_engine: FasterWhisperSTT | None = None,
 ) -> dict[str, Any]:
-    """Evalúa WER, CER, RTF y latencia del STT sobre muestras L2-ARCTIC."""
+    """Ejecuta el benchmark completo de WER, CER, RTF y latencia para un modelo Whisper.
+
+    Args:
+        dataset_dir: Ruta al dataset L2-ARCTIC o subconjunto local.
+        max_samples: Máximo de muestras a evaluar.
+        model_size: Tamaño del modelo (`tiny`, `base`, `small`, etc.).
+        speakers: Subconjunto de hablantes (si es `None`, evalúa todos los encontrados).
+        device: Dispositivo (`"auto"`, `"cuda"`, `"cpu"`).
+        stt_engine: Instancia opcional inyectada (útil para reutilizar modelo o tests).
+
+    Returns:
+        Diccionario resumen con `model`, `device`, `num_samples`, `wer`, `cer`,
+        `mean_latency_ms`, `p95_latency_ms` y `rtf`.
+    """
     samples = discover_l2_arctic_samples(
         dataset_dir=dataset_dir,
         speakers=speakers,
@@ -236,6 +316,7 @@ def evaluate_wer(
         audio_duration_sec = audio.size / max(1, sr)
         total_audio_sec += audio_duration_sec
 
+        # Cronometramos únicamente la llamada al STT para aislar T_STT del acceso a disco.
         t0 = time.perf_counter()
         result = stt.transcribe(audio, sample_rate=sr, language="en")
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -267,7 +348,7 @@ def compare_models(
     speakers: list[str] | None = None,
     device: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Ejecuta evaluación comparativa de WER y latencia entre varios modelos Whisper."""
+    """Compara varios tamaños de Whisper sobre el mismo subconjunto de audios L2."""
     results: list[dict[str, Any]] = []
     for model_size in models:
         metrics = evaluate_wer(
@@ -282,7 +363,7 @@ def compare_models(
 
 
 def format_markdown_table(results: list[dict[str, Any]]) -> str:
-    """Formatea los resultados comparativos en tabla Markdown lista para memoria."""
+    """Genera una tabla Markdown lista para copiar directamente en la memoria técnica."""
     lines = [
         "| Modelo | Device | Muestras | WER (%) | CER (%) | Latencia Media (ms) | p95 (ms) | RTF |",
         "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -297,6 +378,7 @@ def format_markdown_table(results: list[dict[str, Any]]) -> str:
 
 
 def main() -> None:
+    """Punto de entrada CLI para lanzar el benchmark comparativo desde terminal."""
     parser = argparse.ArgumentParser(
         description="Benchmark comparativo WER/CER/RTF de YARNA sobre L2-ARCTIC."
     )

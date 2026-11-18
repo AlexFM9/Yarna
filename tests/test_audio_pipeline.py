@@ -1,4 +1,12 @@
-"""Tests unitarios para el pipeline acústico del Bloque 1 (VAD, STT, TTS y WER)."""
+"""Suite de tests unitarios para el pipeline acústico del Bloque 1.
+
+Los tests están diseñados para ejecutarse de forma rápida, determinista y sin necesidad
+de descargar pesos grandes ni tener micrófono conectado:
+- Se validan las invariantes acústicas (`16 000 Hz`, `float32`, rango `[-1.0, 1.0]`).
+- Se comprueba la diferencia de espera de silencio del VAD entre niveles `A2` y `B2/C1`.
+- Se simulan modelos externos (`WhisperModel`) para verificar contratos de entrada/salida,
+  re-muestreo y parámetros de baja latencia.
+"""
 
 from __future__ import annotations
 
@@ -25,10 +33,12 @@ from tests.eval_wer import (
 
 
 class TestPCMNormalizationAndBuffer(unittest.TestCase):
-    """Pruebas de normalización PCM 16 kHz y buffer circular."""
+    """Valida la estandarización PCM 16 kHz y el comportamiento FIFO del buffer circular."""
 
     def test_normalize_int16_with_dc_offset_and_stereo(self) -> None:
+        """Verifica conversión estéreo int16 -> mono float32 centrado en 0 y escalado."""
         t = np.linspace(0.0, 0.2, int(0.2 * SAMPLE_RATE), endpoint=False)
+        # Señal senoidal con desplazamiento continuo (+1500) para simular offset DC de hardware.
         mono = 4000.0 * np.sin(2.0 * np.pi * 440.0 * t) + 1500.0
         stereo_int16 = np.column_stack([mono, mono]).astype(np.int16)
 
@@ -41,12 +51,14 @@ class TestPCMNormalizationAndBuffer(unittest.TestCase):
         self.assertGreater(float(np.max(np.abs(norm))), 0.95)
 
     def test_normalize_does_not_amplify_silence(self) -> None:
+        """Garantiza que una señal silenciosa no se amplifica hasta 1.0 por ruido térmico."""
         silence = np.full(512, 1e-6, dtype=np.float32)
         norm = normalize_pcm(silence)
         self.assertLess(float(np.max(np.abs(norm))), 1e-4)
 
     def test_circular_buffer_fifo_overflow(self) -> None:
-        buf = CircularPCMBuffer(max_seconds=0.1, sample_rate=100)  # máx 10 muestras
+        """Comprueba que el buffer conserva exactamente las últimas N muestras al desbordar."""
+        buf = CircularPCMBuffer(max_seconds=0.1, sample_rate=100)  # Capacidad máx: 10 muestras.
         buf.append(np.arange(6, dtype=np.float32) / 20.0)
         buf.append(np.arange(6, 14, dtype=np.float32) / 20.0)
         stored = buf.read_all()
@@ -58,38 +70,42 @@ class TestPCMNormalizationAndBuffer(unittest.TestCase):
 
 
 class TestVoiceActivityDetector(unittest.TestCase):
-    """Pruebas del detector de actividad vocal en modo streaming y bloque."""
+    """Valida el VAD en modo streaming (ventanas de 512 muestras) y modo bloque."""
 
     @staticmethod
     def _tone(seconds: float, amp: float = 0.4) -> np.ndarray:
+        """Genera una onda senoidal de prueba simulando energía vocal activa."""
         t = np.linspace(0.0, seconds, int(round(seconds * SAMPLE_RATE)), endpoint=False)
         return (amp * np.sin(2.0 * np.pi * 300.0 * t)).astype(np.float32)
 
     def test_streaming_vad_respects_level_silence_windows(self) -> None:
+        """Comprueba que A2 espera 2.0 s de silencio antes de cerrar turno y B2/C1 solo 0.9 s."""
         vad = VoiceActivityDetector(sample_rate=SAMPLE_RATE, use_silero=False)
         pre_silence = np.zeros(int(0.4 * SAMPLE_RATE), dtype=np.float32)
         speech = self._tone(0.5)
         short_pause = np.zeros(int(1.0 * SAMPLE_RATE), dtype=np.float32)
         long_pause = np.zeros(int(1.2 * SAMPLE_RATE), dtype=np.float32)
 
-        # A2 requiere 2.0 s de silencio -> 1.0 s aún no cierra turno
+        # En nivel A2, 1.0 s de pausa NO debe cerrar la frase (umbral = 2.0 s).
         self.assertIsNone(vad.process_chunk(pre_silence, level="A2"))
         self.assertIsNone(vad.process_chunk(speech, level="A2"))
         self.assertIsNone(vad.process_chunk(short_pause, level="A2"))
 
+        # Al acumular 2.2 s en total (> 2.0 s), debe entregar el segmento normalizado.
         utterance_a2 = vad.process_chunk(long_pause, level="A2")
         self.assertIsNotNone(utterance_a2)
         assert utterance_a2 is not None
         self.assertEqual(utterance_a2.dtype, np.float32)
         self.assertLessEqual(float(np.max(np.abs(utterance_a2))), 1.0)
 
-        # B2/C1 requiere 0.9 s -> 1.0 s sí cierra turno directamente
+        # En nivel B2/C1 (umbral = 0.9 s), la pausa de 1.0 s sí cierra el turno de inmediato.
         vad.reset()
         self.assertIsNone(vad.process_chunk(speech, level="B2/C1"))
         utterance_b2 = vad.process_chunk(short_pause, level="B2/C1")
         self.assertIsNotNone(utterance_b2)
 
     def test_extract_speech_segment_trims_silence(self) -> None:
+        """Verifica que el modo bloque elimina silencios largos manteniendo el núcleo vocal."""
         vad = VoiceActivityDetector(sample_rate=SAMPLE_RATE, use_silero=False)
         leading = np.zeros(int(1.5 * SAMPLE_RATE), dtype=np.float32)
         speech = self._tone(0.6)
@@ -99,19 +115,22 @@ class TestVoiceActivityDetector(unittest.TestCase):
         trimmed = vad.extract_speech_segment(full, level="A2")
         self.assertGreater(trimmed.size, int(0.5 * SAMPLE_RATE))
         self.assertLess(trimmed.size, int(1.5 * SAMPLE_RATE))
+        # Si el audio entero es silencio, debe devolver un vector vacío.
         self.assertEqual(vad.extract_speech_segment(leading, level="A2").size, 0)
 
 
 class TestFasterWhisperSTT(unittest.TestCase):
-    """Pruebas del wrapper faster-whisper y autodetección GPU/CPU."""
+    """Valida resolución de modelos `.en`, autodetección GPU/CPU y contrato STT."""
 
     def test_resolve_english_model_names(self) -> None:
+        """Comprueba la asignación automática del sufijo `.en` cuando corresponde."""
         self.assertEqual(resolve_whisper_model_name("base", True), "base.en")
         self.assertEqual(resolve_whisper_model_name("small", True), "small.en")
         self.assertEqual(resolve_whisper_model_name("base.en", True), "base.en")
         self.assertEqual(resolve_whisper_model_name("base", False), "base")
 
     def test_cuda_autodetect_and_fallback_to_cpu(self) -> None:
+        """Comprueba selección `cuda/float16` con GPU y `cpu/int8` sin GPU."""
         with patch("src.audio.stt.detect_cuda_available", return_value=True):
             stt = FasterWhisperSTT(model_size="base")
             self.assertEqual(stt.device, "cuda")
@@ -124,6 +143,8 @@ class TestFasterWhisperSTT(unittest.TestCase):
             self.assertEqual(stt_cpu.compute_type, "int8")
 
     def test_transcribe_contract_and_resampling(self) -> None:
+        """Verifica re-muestreo de 44.1 kHz a 16 kHz, beam_size=1 y formato de salida."""
+
         class FakeWhisperModel:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
@@ -139,6 +160,7 @@ class TestFasterWhisperSTT(unittest.TestCase):
         stt = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
         stt._model = fake_model
 
+        # Simulamos 0.5 s grabados a 44 100 Hz; debe re-muestrearse a 8 000 muestras (16 kHz).
         audio_44k = 0.3 * np.sin(
             2.0 * np.pi * 220.0 * np.linspace(0.0, 0.5, 22050, endpoint=False)
         ).astype(np.float32)
@@ -154,15 +176,17 @@ class TestFasterWhisperSTT(unittest.TestCase):
 
 
 class TestPiperTTS(unittest.TestCase):
-    """Pruebas del motor Piper TTS, length_scale y re-muestreo a 16 kHz."""
+    """Valida cálculo de `length_scale`, re-muestreo a 16 kHz y síntesis fallback."""
 
     def test_compute_length_scale_for_cefr_levels(self) -> None:
+        """Comprueba la relación inversa `length_scale = 1 / rate` para A2 y B2/C1."""
         self.assertEqual(PiperTTSEngine.compute_length_scale(0.80), 1.25)
         self.assertEqual(PiperTTSEngine.compute_length_scale(1.05), 0.952)
         with self.assertRaises(ValueError):
             PiperTTSEngine.compute_length_scale(0.0)
 
     def test_resample_from_22050_to_16000(self) -> None:
+        """Verifica la conversión de 22 050 Hz (nativo Piper) a 16 000 Hz `float32`."""
         t = np.linspace(0.0, 1.0, 22050, endpoint=False)
         audio_22k = (0.5 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32)
         resampled = PiperTTSEngine._resample_to_target(audio_22k, orig_sr=22050, target_sr=16000)
@@ -171,6 +195,7 @@ class TestPiperTTS(unittest.TestCase):
         self.assertLessEqual(float(np.max(np.abs(resampled))), 1.0)
 
     def test_synthesize_returns_16khz_float32_and_scales_duration(self) -> None:
+        """Comprueba que la síntesis A2 (`0.80x`) dura más que B2/C1 (`1.05x`)."""
         tts = PiperTTSEngine(use_cuda=False, auto_download=False)
         tts.model_path = Path("non_existent_model.onnx")
         tts.config_path = Path("non_existent_model.onnx.json")
@@ -186,9 +211,10 @@ class TestPiperTTS(unittest.TestCase):
 
 
 class TestEvalWER(unittest.TestCase):
-    """Pruebas de normalización de texto, cálculo WER y lectura L2-ARCTIC."""
+    """Valida la normalización inglesa, cálculo WER y lectura de estructura L2-ARCTIC."""
 
     def test_normalize_and_wer_score(self) -> None:
+        """Comprueba expansión de contracciones y cálculo exacto de WER sobre errores conocidos."""
         self.assertEqual(normalize_transcript("I'm happy, aren't you?"), "i am happy are not you")
         perfect = compute_wer_score(["I'm ready."], ["I am ready"])
         self.assertAlmostEqual(perfect["wer"], 0.0, places=4)
@@ -197,6 +223,7 @@ class TestEvalWER(unittest.TestCase):
         self.assertAlmostEqual(one_error["wer"], 0.25, places=4)
 
     def test_evaluate_wer_l2_arctic_layout(self) -> None:
+        """Simula un directorio L2-ARCTIC temporal (hablante EBVS) y evalúa tabla y métricas."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             wav_dir = root / "EBVS" / "wav"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable
 
@@ -45,7 +46,7 @@ def _load_pipeline_stages() -> tuple[
         from src.audio.vad import VoiceActivityDetector
 
         try:
-            vad_obj = VoiceActivityDetector(level="A2")
+            vad_obj = VoiceActivityDetector(sample_rate=SAMPLE_RATE)
         except TypeError:
             vad_obj = VoiceActivityDetector()
     except Exception:
@@ -54,7 +55,9 @@ def _load_pipeline_stages() -> tuple[
     def vad_fn(audio: np.ndarray) -> object:
         if vad_obj is not None:
             try:
-                return vad_obj.process_chunk(audio)
+                if hasattr(vad_obj, "extract_speech_segment"):
+                    return vad_obj.extract_speech_segment(audio, level="A2")
+                return vad_obj.process_chunk(audio, level="A2")
             except (NotImplementedError, TypeError):
                 pass
         return float(np.mean(np.abs(audio)))
@@ -67,8 +70,7 @@ def _load_pipeline_stages() -> tuple[
         try:
             stt_obj = FasterWhisperSTT(
                 model_size=settings.whisper_model_size,
-                device=settings.whisper_device,
-                compute_type=settings.whisper_compute_type,
+                device=os.getenv("WHISPER_DEVICE") or "auto",
             )
         except TypeError:
             stt_obj = FasterWhisperSTT()
@@ -80,7 +82,7 @@ def _load_pipeline_stages() -> tuple[
             try:
                 res = stt_obj.transcribe(audio)
                 return res["text"] if isinstance(res, dict) else str(res)
-            except (NotImplementedError, TypeError):
+            except (NotImplementedError, TypeError, ImportError, RuntimeError):
                 pass
         return "I would like a coffee please."
 
@@ -115,7 +117,7 @@ def _load_pipeline_stages() -> tuple[
         from src.audio.tts import PiperTTSEngine
 
         try:
-            tts_obj = PiperTTSEngine(model_path=settings.piper_model_path)
+            tts_obj = PiperTTSEngine(settings=settings)
         except TypeError:
             tts_obj = PiperTTSEngine()
     except Exception:
@@ -124,7 +126,10 @@ def _load_pipeline_stages() -> tuple[
     def tts_fn(text: str, rate: float) -> np.ndarray:
         if tts_obj is not None:
             try:
-                return tts_obj.synthesize(text, rate)
+                res = tts_obj.synthesize(text, rate)
+                if isinstance(res, tuple) and len(res) == 2:
+                    return res[1]
+                return res
             except (NotImplementedError, TypeError):
                 pass
         return np.zeros(int(SAMPLE_RATE * 1.2), dtype=np.float32)

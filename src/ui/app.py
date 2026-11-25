@@ -624,17 +624,38 @@ def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.nda
 
 
 def _safe_fsm_transition(fsm: StateMachine, action: str) -> SystemState:
-    """Ejecuta transiciones de StateMachine tolerando que aún tenga NotImplementedError."""
+    """Ejecuta transiciones de StateMachine tolerando NotImplementedError y estados ya activos."""
+    fallback_map = {
+        "start_session": SystemState.LISTENING,
+        "on_speech_ended": SystemState.PROCESSING,
+        "on_response_ready": SystemState.SPEAKING,
+        "on_playback_finished": SystemState.LISTENING,
+        "stop_session": SystemState.IDLE,
+    }
     try:
+        current = fsm.state
+        if action == "start_session":
+            if current == SystemState.LISTENING:
+                return current
+            if current in (SystemState.PROCESSING, SystemState.SPEAKING):
+                fsm.stop_session()
+        elif action == "on_speech_ended":
+            if current == SystemState.PROCESSING:
+                return current
+            if current == SystemState.IDLE:
+                fsm.start_session()
+        elif action == "on_response_ready":
+            if current == SystemState.SPEAKING:
+                return current
+        elif action == "on_playback_finished":
+            if current == SystemState.LISTENING:
+                return current
+            if current != SystemState.SPEAKING:
+                fsm.stop_session()
+                return fsm.start_session()
+
         return getattr(fsm, action)()
-    except NotImplementedError:
-        fallback_map = {
-            "start_session": SystemState.LISTENING,
-            "on_speech_ended": SystemState.PROCESSING,
-            "on_response_ready": SystemState.SPEAKING,
-            "on_playback_finished": SystemState.LISTENING,
-            "stop_session": SystemState.IDLE,
-        }
+    except (NotImplementedError, ValueError):
         fsm._state = fallback_map.get(action, SystemState.IDLE)
         return fsm.state
 
@@ -950,14 +971,22 @@ def process_turn_handler(
     )
     session.last_activity_ts = time.monotonic()
 
+    if tts_audio is None:
+        final_state = _safe_fsm_transition(session.fsm, "on_playback_finished")
+        status_html = _render_status_badge(final_state, "Modo simulado · Tu turno")
+        mic_update = gr.update(value=None, interactive=True)
+    else:
+        status_html = _render_status_badge(speaking_state, "Reproduciendo respuesta")
+        mic_update = gr.update(interactive=False)
+
     return (
         session,
-        _render_status_badge(speaking_state, "Reproduciendo respuesta"),
+        status_html,
         tts_audio,
         _render_chat_window(chat),
         _render_error_cards(chat),
         gr.update(choices=session.chat_choices(), value=chat.chat_id),
-        gr.update(interactive=False),
+        mic_update,
     )
 
 

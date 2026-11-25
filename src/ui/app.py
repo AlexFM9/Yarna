@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import html
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -623,17 +624,38 @@ def _ensure_audio_16k_mono(audio_tuple: tuple[int, np.ndarray] | None) -> np.nda
 
 
 def _safe_fsm_transition(fsm: StateMachine, action: str) -> SystemState:
-    """Ejecuta transiciones de StateMachine tolerando que aún tenga NotImplementedError."""
+    """Ejecuta transiciones de StateMachine tolerando NotImplementedError y estados ya activos."""
+    fallback_map = {
+        "start_session": SystemState.LISTENING,
+        "on_speech_ended": SystemState.PROCESSING,
+        "on_response_ready": SystemState.SPEAKING,
+        "on_playback_finished": SystemState.LISTENING,
+        "stop_session": SystemState.IDLE,
+    }
     try:
+        current = fsm.state
+        if action == "start_session":
+            if current == SystemState.LISTENING:
+                return current
+            if current in (SystemState.PROCESSING, SystemState.SPEAKING):
+                fsm.stop_session()
+        elif action == "on_speech_ended":
+            if current == SystemState.PROCESSING:
+                return current
+            if current == SystemState.IDLE:
+                fsm.start_session()
+        elif action == "on_response_ready":
+            if current == SystemState.SPEAKING:
+                return current
+        elif action == "on_playback_finished":
+            if current == SystemState.LISTENING:
+                return current
+            if current != SystemState.SPEAKING:
+                fsm.stop_session()
+                return fsm.start_session()
+
         return getattr(fsm, action)()
-    except NotImplementedError:
-        fallback_map = {
-            "start_session": SystemState.LISTENING,
-            "on_speech_ended": SystemState.PROCESSING,
-            "on_response_ready": SystemState.SPEAKING,
-            "on_playback_finished": SystemState.LISTENING,
-            "stop_session": SystemState.IDLE,
-        }
+    except (NotImplementedError, ValueError):
         fsm._state = fallback_map.get(action, SystemState.IDLE)
         return fsm.state
 
@@ -663,15 +685,14 @@ def _run_pipeline_turn(
 
         if session.vad is None:
             try:
-                session.vad = VoiceActivityDetector(level=chat.profile.level.value)
+                session.vad = VoiceActivityDetector(sample_rate=SAMPLE_RATE)
             except TypeError:
                 session.vad = VoiceActivityDetector()
         if session.stt is None:
             try:
                 session.stt = FasterWhisperSTT(
                     model_size=settings.whisper_model_size,
-                    device=settings.whisper_device,
-                    compute_type=settings.whisper_compute_type,
+                    device=os.getenv("WHISPER_DEVICE") or "auto",
                 )
             except TypeError:
                 session.stt = FasterWhisperSTT()
@@ -682,12 +703,21 @@ def _run_pipeline_turn(
                 session.orchestrator = CognitiveOrchestrator()
         if session.tts is None:
             try:
-                session.tts = PiperTTSEngine(model_path=settings.piper_model_path)
+                session.tts = PiperTTSEngine(settings=settings)
             except TypeError:
                 session.tts = PiperTTSEngine()
 
-        _ = session.vad.process_chunk(audio_16k)
-        stt_result = session.stt.transcribe(audio_16k)
+        level_key = chat.profile.level.value
+        if hasattr(session.vad, "extract_speech_segment"):
+            trimmed_audio = session.vad.extract_speech_segment(audio_16k, level=level_key)
+        else:
+            trimmed_audio = session.vad.process_chunk(audio_16k, level=level_key)
+        audio_for_stt = (
+            trimmed_audio
+            if trimmed_audio is not None and len(trimmed_audio) > 0
+            else audio_16k
+        )
+        stt_result = session.stt.transcribe(audio_for_stt, sample_rate=SAMPLE_RATE)
         user_text = stt_result["text"] if isinstance(stt_result, dict) else str(stt_result)
 
         tutor_resp: TutorResponse = session.orchestrator.process_turn(
@@ -695,11 +725,16 @@ def _run_pipeline_turn(
             chat.profile,
         )
 
-        tts_audio = session.tts.synthesize(
+        tts_result = session.tts.synthesize(
             tutor_resp.oral_response,
             tutor_resp.prosody_flags.rate,
         )
-        return tutor_resp, (SAMPLE_RATE, tts_audio)
+        if isinstance(tts_result, tuple) and len(tts_result) == 2:
+            tts_sr, tts_pcm = int(tts_result[0]), tts_result[1]
+        else:
+            tts_sr, tts_pcm = SAMPLE_RATE, tts_result
+        tts_output = (tts_sr, tts_pcm) if tts_pcm is not None and len(tts_pcm) > 0 else None
+        return tutor_resp, tts_output
 
     except (ImportError, NotImplementedError, AttributeError, TypeError):
         turn_num = len(chat.messages) // 2 + 1
@@ -936,14 +971,22 @@ def process_turn_handler(
     )
     session.last_activity_ts = time.monotonic()
 
+    if tts_audio is None:
+        final_state = _safe_fsm_transition(session.fsm, "on_playback_finished")
+        status_html = _render_status_badge(final_state, "Modo simulado · Tu turno")
+        mic_update = gr.update(value=None, interactive=True)
+    else:
+        status_html = _render_status_badge(speaking_state, "Reproduciendo respuesta")
+        mic_update = gr.update(interactive=False)
+
     return (
         session,
-        _render_status_badge(speaking_state, "Reproduciendo respuesta"),
+        status_html,
         tts_audio,
         _render_chat_window(chat),
         _render_error_cards(chat),
         gr.update(choices=session.chat_choices(), value=chat.chat_id),
-        gr.update(interactive=False),
+        mic_update,
     )
 
 

@@ -131,16 +131,17 @@ class TestFasterWhisperSTT(unittest.TestCase):
 
     def test_cuda_autodetect_and_fallback_to_cpu(self) -> None:
         """Comprueba selección `cuda/float16` con GPU y `cpu/int8` sin GPU."""
-        with patch("src.audio.stt.detect_cuda_available", return_value=True):
-            stt = FasterWhisperSTT(model_size="base")
-            self.assertEqual(stt.device, "cuda")
-            self.assertEqual(stt.compute_type, "float16")
-            self.assertEqual(stt.model_name, "base.en")
+        with patch.dict("os.environ", {"WHISPER_DEVICE": "auto"}, clear=False):
+            with patch("src.audio.stt.detect_cuda_available", return_value=True):
+                stt = FasterWhisperSTT(model_size="base")
+                self.assertEqual(stt.device, "cuda")
+                self.assertEqual(stt.compute_type, "float16")
+                self.assertEqual(stt.model_name, "base.en")
 
-        with patch("src.audio.stt.detect_cuda_available", return_value=False):
-            stt_cpu = FasterWhisperSTT(model_size="base")
-            self.assertEqual(stt_cpu.device, "cpu")
-            self.assertEqual(stt_cpu.compute_type, "int8")
+            with patch("src.audio.stt.detect_cuda_available", return_value=False):
+                stt_cpu = FasterWhisperSTT(model_size="base")
+                self.assertEqual(stt_cpu.device, "cpu")
+                self.assertEqual(stt_cpu.compute_type, "int8")
 
     def test_transcribe_contract_and_resampling(self) -> None:
         """Verifica re-muestreo de 44.1 kHz a 16 kHz, beam_size=1 y formato de salida."""

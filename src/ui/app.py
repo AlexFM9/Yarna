@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import html
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -663,15 +664,14 @@ def _run_pipeline_turn(
 
         if session.vad is None:
             try:
-                session.vad = VoiceActivityDetector(level=chat.profile.level.value)
+                session.vad = VoiceActivityDetector(sample_rate=SAMPLE_RATE)
             except TypeError:
                 session.vad = VoiceActivityDetector()
         if session.stt is None:
             try:
                 session.stt = FasterWhisperSTT(
                     model_size=settings.whisper_model_size,
-                    device=settings.whisper_device,
-                    compute_type=settings.whisper_compute_type,
+                    device=os.getenv("WHISPER_DEVICE") or "auto",
                 )
             except TypeError:
                 session.stt = FasterWhisperSTT()
@@ -686,8 +686,17 @@ def _run_pipeline_turn(
             except TypeError:
                 session.tts = PiperTTSEngine()
 
-        _ = session.vad.process_chunk(audio_16k)
-        stt_result = session.stt.transcribe(audio_16k)
+        level_key = chat.profile.level.value
+        if hasattr(session.vad, "extract_speech_segment"):
+            trimmed_audio = session.vad.extract_speech_segment(audio_16k, level=level_key)
+        else:
+            trimmed_audio = session.vad.process_chunk(audio_16k, level=level_key)
+        audio_for_stt = (
+            trimmed_audio
+            if trimmed_audio is not None and len(trimmed_audio) > 0
+            else audio_16k
+        )
+        stt_result = session.stt.transcribe(audio_for_stt, sample_rate=SAMPLE_RATE)
         user_text = stt_result["text"] if isinstance(stt_result, dict) else str(stt_result)
 
         tutor_resp: TutorResponse = session.orchestrator.process_turn(

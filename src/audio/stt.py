@@ -258,22 +258,14 @@ class FasterWhisperSTT:
 
         # En modelos `.en` fijamos siempre "en" para ahorrar cualquier comprobación de idioma.
         effective_lang = "en" if self.model_name.endswith(".en") else language
-        segments_iter, _ = self._model.transcribe(
-            pcm,
-            language=effective_lang,
-            beam_size=1,
-            best_of=1,
-            vad_filter=False,  # El filtrado VAD ya lo realizó `VoiceActivityDetector`.
-            condition_on_previous_text=False,  # Evita bucles repetitivos en frases cortas L2.
-        )
+        raw_segments = self._decode_with_cuda_fallback(pcm, effective_lang)
 
         segments: list[dict[str, Any]] = []
         weighted_conf_sum = 0.0
         total_weight = 0.0
         texts: list[str] = []
 
-        # `faster-whisper` devuelve un generador; al iterarlo se ejecuta la decodificación real.
-        for seg in segments_iter:
+        for seg in raw_segments:
             text_piece = str(getattr(seg, "text", "")).strip()
             start_ms = int(round(float(getattr(seg, "start", 0.0)) * 1000))
             end_ms = int(round(float(getattr(seg, "end", 0.0)) * 1000))
@@ -313,3 +305,38 @@ class FasterWhisperSTT:
             "device": self.device,
             "model_name": self.model_name,
         }
+
+    def _decode_with_cuda_fallback(
+        self, pcm: np.ndarray, effective_lang: str
+    ) -> list[Any]:
+        """Ejecuta `transcribe()` y materializa el generador con fallback a CPU si falta una DLL CUDA."""
+        try:
+            segments_iter, _ = self._model.transcribe(
+                pcm,
+                language=effective_lang,
+                beam_size=1,
+                best_of=1,
+                vad_filter=False,  # El filtrado VAD ya lo realizó `VoiceActivityDetector`.
+                condition_on_previous_text=False,  # Evita bucles repetitivos en frases cortas L2.
+            )
+            return list(segments_iter)
+        except RuntimeError as exc:
+            if self.device != "cuda":
+                raise
+            logger.warning(
+                "Fallo en inferencia CUDA de faster-whisper (%s). Reintentando en CPU INT8.",
+                exc,
+            )
+            self.device = "cpu"
+            self.compute_type = "int8"
+            self._model = None
+            self._ensure_model_loaded()
+            segments_iter, _ = self._model.transcribe(
+                pcm,
+                language=effective_lang,
+                beam_size=1,
+                best_of=1,
+                vad_filter=False,
+                condition_on_previous_text=False,
+            )
+            return list(segments_iter)

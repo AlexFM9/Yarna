@@ -682,7 +682,7 @@ def _run_pipeline_turn(
                 session.orchestrator = CognitiveOrchestrator()
         if session.tts is None:
             try:
-                session.tts = PiperTTSEngine(model_path=settings.piper_model_path)
+                session.tts = PiperTTSEngine(settings=settings)
             except TypeError:
                 session.tts = PiperTTSEngine()
 
@@ -695,11 +695,16 @@ def _run_pipeline_turn(
             chat.profile,
         )
 
-        tts_audio = session.tts.synthesize(
+        tts_result = session.tts.synthesize(
             tutor_resp.oral_response,
             tutor_resp.prosody_flags.rate,
         )
-        return tutor_resp, (SAMPLE_RATE, tts_audio)
+        if isinstance(tts_result, tuple) and len(tts_result) == 2:
+            tts_sr, tts_pcm = int(tts_result[0]), tts_result[1]
+        else:
+            tts_sr, tts_pcm = SAMPLE_RATE, tts_result
+        tts_output = (tts_sr, tts_pcm) if tts_pcm is not None and len(tts_pcm) > 0 else None
+        return tutor_resp, tts_output
 
     except (ImportError, NotImplementedError, AttributeError, TypeError):
         turn_num = len(chat.messages) // 2 + 1
